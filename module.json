@@ -1,0 +1,31 @@
+{
+  "id": "rusbar-homerules-for-wod-v20-system",
+  "title": "RUSBAR Homerules for WoD v20 system",
+  "version": "0.0.1",
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13"
+  },
+  "authors": [
+    {
+      "name": "RUSBAR",
+      "url": "https://github.com/RUSBAR-ITS",
+      "discord": "rusbar",
+      "flags": {}
+    }
+  ],
+  "url": "https://github.com/RUSBAR-ITS/wod_v20_rb_homerules.git",
+  "flags": {
+    "canUpload": true
+  },
+  "relationships": {
+    "systems": [
+      {
+        "id": "worldofdarkness",
+        "type": "system",
+        "compatibility": {}
+      }
+    ]
+  },
+  "description": ""
+}
