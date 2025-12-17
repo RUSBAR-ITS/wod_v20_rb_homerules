@@ -3,7 +3,7 @@ import { FATE_UI } from "../constants/fate-ui.js";
 /**
  * Synchronize Fate UI with actor data.
  *
- * Why:
+ * Why this is required:
  * - The system helper renders the steps, but the sheet normally runs its own
  *   initializer to apply "active" classes based on stored values.
  * - Our Fate block is injected after the sheet has already activated listeners,
@@ -17,7 +17,11 @@ export function syncFateUi(root, actor) {
 
   const fate = actor.system?.advantages?.fate ?? {};
   const max = Number(fate.max ?? 10);
-  const perm = Math.max(1, Math.min(Number(fate.permanent ?? 0), max));
+
+  // IMPORTANT:
+  // - permanent is allowed to be 0..max (0 means "no dots selected")
+  // - temporary is allowed to be 0..permanent
+  const perm = Math.max(0, Math.min(Number(fate.permanent ?? 0), max));
   const temp = Math.max(0, Math.min(Number(fate.temporary ?? 0), perm));
 
   const permRow = root.find(FATE_UI.SELECTORS.fatePermanentRow).first();
