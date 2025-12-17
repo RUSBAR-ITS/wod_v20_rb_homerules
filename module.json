@@ -8,13 +8,13 @@
   },
   "authors": [
     {
-      "name": "RUSBAR",
+      "name": "Ilya \"RUSBAR\" Barkalov",
       "url": "https://github.com/RUSBAR-ITS",
       "discord": "rusbar",
       "flags": {}
     }
   ],
-  "url": "https://github.com/RUSBAR-ITS/wod_v20_rb_homerules.git",
+  "url": "https://raw.githubusercontent.com/RUSBAR-ITS/wod_v20_rb_homerules/refs/heads/main/module.json",
   "flags": {
     "canUpload": true
   },
@@ -27,5 +27,5 @@
       }
     ]
   },
-  "description": ""
+  "description": "<ul><li><p>Fate System</p></li><li><p>Evil Botches</p></li></ul>"
 }
