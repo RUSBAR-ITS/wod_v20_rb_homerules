@@ -1,0 +1,20 @@
+{
+  "wod.advantages.fate": "Fate",
+  "rusbar": {
+    "homerules": {
+      "settings": {
+        "enableFate": {
+          "name": "Enable Fate rules",
+          "hint": "Adds the Fate resource to Vampire sheets (willpower-like scale)."
+        },
+        "enableDebug": {
+          "name": "Enable debug logging",
+          "hint": "Enables extended debug logging for the module."
+        }
+      },
+      "fate": {
+        "label": "Fate"
+      }
+    }
+  }
+}

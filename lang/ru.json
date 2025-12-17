@@ -1,0 +1,20 @@
+{
+  "wod.advantages.fate": "Судьба",
+  "rusbar": {
+    "homerules": {
+      "settings": {
+        "enableFate": {
+          "name": "Включить Fate",
+          "hint": "Добавляет ресурс Fate на лист вампира (шкала как Willpower)."
+        },
+        "enableDebug": {
+          "name": "Включить расширенный лог",
+          "hint": "Включает расширенное debug-логирование модуля."
+        }
+      },
+      "fate": {
+        "label": "Судьба"
+      }
+    }
+  }
+}

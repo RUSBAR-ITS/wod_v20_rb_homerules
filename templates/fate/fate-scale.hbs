@@ -1,0 +1,14 @@
+{{!--
+  Fate scale template.
+
+  We intentionally reuse the system helper getGetStatArea to render a counter
+  that is visually identical to Willpower.
+
+  Parameters:
+  - actor: the actor being rendered
+  - fate: our Fate data object (same shape as willpower)
+  - "fate": stat key used in generated data-name paths (advantages.fate.*)
+  - isrollable=false for now (rules can change later)
+  - show permanent + temporary + max (willpower-like)
+--}}
+{{{getGetStatArea actor fate "fate" false true true true}}}

@@ -27,5 +27,23 @@
       }
     ]
   },
-  "description": "<ul><li><p>Fate System</p></li><li><p>Evil Botches</p></li></ul>"
+  "description": "<ul><li><p>Fate System</p></li><li><p>Evil Botches</p></li></ul>",
+  "esmodules": [
+    "scripts/init.js"
+  ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    },
+    {
+      "lang": "ru",
+      "name": "Русский",
+      "path": "lang/ru.json"
+    }
+  ],
+  "templates": [
+    "templates/fate/fate-scale.hbs"
+  ]
 }
