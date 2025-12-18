@@ -22,6 +22,17 @@ export const FATE_RULES = Object.freeze({
   }),
 
   /**
+   * Which Fate field should be used as the dice pool for system "noability" rolls.
+   * The upstream DialogGeneralRoll reads `advantages.<key>.roll` for noability rolls,
+   * so we keep `roll` synchronized with the chosen source field.
+   *
+   * Allowed values:
+   * - "permanent" (recommended; willpower-like)
+   * - "temporary" (if your rules say you roll remaining points)
+   */
+  ROLL_SOURCE: "permanent",
+
+  /**
    * Safety cap for `max` to protect against extreme/broken values.
    * Adjust if your rules allow larger scales.
    */

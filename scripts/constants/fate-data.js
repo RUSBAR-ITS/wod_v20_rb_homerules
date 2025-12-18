@@ -8,6 +8,11 @@
 
 export const FATE_DATA = Object.freeze({
   /**
+   * The WoD system stat key used by sheet helpers and roll dialogs.
+   */
+  STAT_KEY: "fate",
+
+  /**
    * Full Foundry update path base (includes the "system." prefix).
    * Example usage:
    *   await actor.update({ [`${PATH_BASE_SYSTEM}.max`]: 10 });

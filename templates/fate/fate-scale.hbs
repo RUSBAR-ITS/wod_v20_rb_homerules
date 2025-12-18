@@ -8,7 +8,7 @@
   - actor: the actor being rendered
   - fate: our Fate data object (same shape as willpower)
   - "fate": stat key used in generated data-name paths (advantages.fate.*)
-  - isrollable=false for now (rules can change later)
+  - isrollable=true so the headline is clickable (like willpower/faith)
   - show permanent + temporary + max (willpower-like)
 --}}
-{{{getGetStatArea actor fate "fate" false true true true}}}
+{{{getGetStatArea actor fate "fate" true true true true}}}

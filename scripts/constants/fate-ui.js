@@ -43,6 +43,11 @@ export const FATE_UI = Object.freeze({
     sheetBoxContainer: ".sheet-boxcontainer",
     resourceStep: ".resource-value-step",
 
+    // The helper getGetStatArea renders a headline div with data-key="fate".
+    // We bind our roll click handler to it (and stop propagation to avoid
+    // conflicts with upstream sheet listeners).
+    fateHeadline: `.sheet-headline[data-key="fate"]`,
+
     // Rows as produced by system helper getGetStatArea:
     // We do NOT rely on class names like "permValueRow"/"tempSquareRow" anymore.
     // We sync using data-name targets which are stable.

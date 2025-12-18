@@ -10,106 +10,92 @@ import { isVampireSheet } from "./fate/is-vampire-sheet.js";
 import { ensureFateData } from "./fate/ensure-fate-data.js";
 import { renderFateScale } from "./fate/render-fate-scale.js";
 import { bindFateClicks } from "./fate/bind-fate-clicks.js";
+import { registerDisableWillpowerForFateHook } from "./fate/disable-willpower-for-fate.js";
 
 const { debug, info, warn, error } = debugNs("init");
 
 /**
- * Module bootstrap.
+ * Foundry init hook:
+ * - register settings (must be done early)
+ * - register UI tweak hooks that should exist before any dialogs are rendered
  *
- * Lifecycle overview:
- * - init:
- *   - register module settings (WITHOUT using logger inside settings file)
- *   - expose a minimal API bridge for settings onChange handlers
- *
- * - ready:
- *   - read enableDebug setting and configure logger state
- *
- * - renderActorSheet:
- *   - if Fate enabled AND sheet is Vampire:
- *       ensure Fate data exists
- *       render Fate scale next to Willpower
- *       bind click handlers for Fate steps
+ * NOTE:
+ * We keep this hook minimal: no DOM operations, no actor mutations here.
  */
 Hooks.once("init", () => {
-  /**
-   * Register settings.
-   * NOTE: registerSettings() must not rely on logger.
-   */
   registerSettings();
 
   /**
-   * Expose a safe API bridge for settings onChange callbacks.
-   *
-   * Why this exists:
-   * - The settings registration file cannot import logger.
-   * - But we want enableDebug changes to immediately toggle logger behavior.
-   *
-   * So the settings file calls:
-   *   game.modules.get(MODULE_ID).api.setDebugEnabled(...)
+   * Disable Willpower option for Fate rolls in the upstream General Roll dialog.
+   * This is a UI-layer fix and should be registered early.
    */
-  try {
-    const mod = game.modules.get(MODULE_ID);
-    if (mod) {
-      mod.api = mod.api || {};
-      mod.api.setDebugEnabled = setDebugEnabled;
-    }
-  } catch (_err) {
-    // Never crash init because of an optional API bridge.
-  }
+  registerDisableWillpowerForFateHook();
+
+  debug("Init complete");
 });
 
+/**
+ * Foundry ready hook:
+ * - initialize debug flag based on user settings
+ *
+ * NOTE:
+ * This is the earliest point where settings are guaranteed to be available.
+ */
 Hooks.once("ready", () => {
-  /**
-   * Configure debug mode after Foundry is ready and settings are available.
-   */
   try {
     const enabled = game.settings.get(MODULE_ID, SETTINGS_KEYS.ENABLE_DEBUG) === true;
     setDebugEnabled(enabled);
-
-    info(`Debug logging ${enabled ? "enabled" : "disabled"}.`);
+    info("Ready", { debug: enabled });
   } catch (err) {
-    // If anything goes wrong here, fallback to raw console.
-    console.error(`[${MODULE_ID}:init] Failed to initialize debug flag`, err);
+    // This should not normally fail, but we avoid hard failures in ready().
+    warn("Failed to read debug setting on ready", err);
   }
 });
 
 /**
- * Sheet render hook.
+ * renderActorSheet:
+ * We inject Fate UI only when:
+ * - the feature is enabled in module settings
+ * - the sheet is a Vampire sheet (our supported target)
  *
- * We use renderActorSheet instead of template overrides because:
- * - it is non-invasive (no system file modifications)
- * - allows targeting specific sheets and actor types
- * - supports future extension to additional sheets by adding checks
+ * Sequence:
+ * 1) ensure Fate data exists and is normalized (including `roll` sync)
+ * 2) render/inject Fate scale HTML
+ * 3) bind Fate click handlers (steps + headline roll)
+ *
+ * NOTE:
+ * This is executed on every sheet render, so the code must be safe and idempotent.
  */
 Hooks.on("renderActorSheet", async (app, html) => {
   try {
-    // Global gate: module feature must be enabled.
+    // Feature gating: do nothing if Fate is disabled.
     if (!shouldEnableFate()) return;
 
-    // Sheet gate: only Vampire sheets for now.
+    // Sheet gating: do nothing if this is not a vampire sheet we support.
     if (!isVampireSheet(app)) return;
 
-    debug("renderActorSheet: vampire sheet detected", {
-      actorId: app.actor?.id,
-      actorName: app.actor?.name,
-      sheetClass: app?.constructor?.name,
-    });
+    const actor = app.actor;
+    if (!actor) return;
 
     /**
-     * Ensure data exists BEFORE rendering, because the system helper expects
-     * actor.system.advantages.fate.* to be defined.
+     * Ensure actor has the Fate structure and `advantages.fate.roll` is synchronized
+     * with the chosen roll policy (permanent/temporary).
+     *
+     * This is required because the upstream `DialogGeneralRoll` for "noability"
+     * reads dice pool from `advantages.<key>.roll`.
      */
-    await ensureFateData(app.actor);
+    await ensureFateData(actor);
 
     /**
-     * Insert Fate UI (willpower-like scale) into the sheet DOM.
-     * This uses the system's helper getGetStatArea, so the visuals match 1:1.
+     * Render Fate scale and inject it into the sheet DOM.
+     * This function is expected to be idempotent and use a wrapper marker.
      */
     await renderFateScale(app, html);
 
     /**
-     * Bind click handlers for Fate steps. We do this after insertion,
-     * and we do it each render (with off/on) to avoid duplicates.
+     * Bind click handlers inside the Fate wrapper:
+     * - headline click => open upstream roll dialog (noability for fate)
+     * - step click => update permanent/temporary and sync `roll`
      */
     bindFateClicks(app, html);
   } catch (err) {
