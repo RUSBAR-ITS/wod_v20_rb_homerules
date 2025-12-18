@@ -61,6 +61,14 @@ function injectIntoDialog(app, html, dialogName) {
     if (html.attr(MARKER_ATTR) === "true") return;
     html.attr(MARKER_ATTR, "true");
 
+    // Exclusion: Do NOT show/use Fate checkbox in the Fate roll itself.
+    // Fate rolls are implemented via the upstream General Roll dialog with key "fate".
+    // Showing "Use Fate" there is confusing and can create self-referential UX.
+    if (dialogName === "DialogGeneralRoll" && app?.object?.key === "fate") {
+      debug("Skipping Use Fate injection for Fate roll dialog", { dialogName, key: app?.object?.key });
+      return;
+    }
+
     // Exclusion: Weapon dialog damage mode should NOT show/use Fate.
     if (dialogName === "DialogWeapon") {
       const weaponType = app?.object?.weaponType;
@@ -80,13 +88,37 @@ function injectIntoDialog(app, html, dialogName) {
     // Most upstream dialogs use `.dialog-checkbox` for these options.
     const lastCheckboxBlock = html.find(".dialog-checkbox").last();
 
+    /**
+     * Prefer the dialog-area which actually represents the dicepool section.
+     * Some dialogs (e.g. Willpower) may not have any other `.dialog-checkbox` rows,
+     * so the old heuristic (last checkbox) could resolve to the wrong section.
+     */
+    const dicePoolHeadlineText = (game?.i18n?.localize?.("wod.dialog.dicepool") || "").trim();
     let dicePoolArea = null;
-    if (lastCheckboxBlock && lastCheckboxBlock.length > 0) {
-      dicePoolArea = lastCheckboxBlock.closest(".dialog-area");
-    } else {
-      // Fallback: use the first dialog-area as a last resort (should be rare).
-      dicePoolArea = html.find(".dialog-area").first();
-      warn("Could not find `.dialog-checkbox`; using fallback dicePoolArea", { dialogName });
+
+    if (dicePoolHeadlineText.length > 0) {
+      const headlineBox = html
+        .find(".dialog-area .infobox.headline")
+        .filter((_, el) => {
+          const t = $(el).text().trim();
+          return t === dicePoolHeadlineText;
+        })
+        .first();
+
+      if (headlineBox && headlineBox.length > 0) {
+        dicePoolArea = headlineBox.closest(".dialog-area");
+      }
+    }
+
+    // Fallback to previous heuristic if the headline-based approach failed.
+    if (!dicePoolArea || dicePoolArea.length === 0) {
+      if (lastCheckboxBlock && lastCheckboxBlock.length > 0) {
+        dicePoolArea = lastCheckboxBlock.closest(".dialog-area");
+      } else {
+        // Last resort: use the first dialog-area (should be rare).
+        dicePoolArea = html.find(".dialog-area").first();
+        warn("Could not resolve dicePoolArea reliably; using fallback", { dialogName });
+      }
     }
 
     if (!dicePoolArea || dicePoolArea.length === 0) {

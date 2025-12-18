@@ -142,6 +142,32 @@ export async function registerDiceContainerFatePatch() {
               fateBonus: ctx.fateBonus,
               finalNumDices: v,
             });
+
+            /**
+             * Add "+ Fate (X)" to the roll result output in chat.
+             *
+             * Upstream DiceRoller composes `data.title` by appending each entry from
+             * `diceRoll.dicetext` using " + ". Therefore, pushing "Fate (X)" into
+             * `dicetext` results in the desired suffix in the final chat card.
+             *
+             * We avoid duplicates by marking the container instance.
+             */
+            const fateTextMarker = "__rusbarFateRollAddonTextAdded__";
+            if (this?.[fateTextMarker] !== true) {
+              const fateLabel =
+                (game?.i18n?.localize?.("wod.advantages.fate") || "").trim() || "Fate";
+              const fateText = `${fateLabel} (${ctx.fateBonus})`;
+
+              if (!Array.isArray(this.dicetext)) this.dicetext = [];
+              this.dicetext.push(fateText);
+              this[fateTextMarker] = true;
+
+              debug("Added Fate roll addon text to dicetext", {
+                origin,
+                fateBonus: ctx.fateBonus,
+                fateText,
+              });
+            }
           } else {
             debug("Skipped Fate dice bonus due to excluded origin", { origin });
           }

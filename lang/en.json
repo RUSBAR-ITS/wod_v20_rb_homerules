@@ -14,7 +14,8 @@
       },
       "fate": {
         "label": "Fate",
-        "useFate": "Use Fate"
+        "useFate": "Use Fate",
+        "rollAddon": "Fate ({bonus})"
       }
     }
   }
