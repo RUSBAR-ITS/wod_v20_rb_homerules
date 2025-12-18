@@ -8,44 +8,91 @@ const { debug, info, warn, error } = debugNs("fate:tag:dice-types");
 /**
  * Register a hook that tags dice "types" for Fate-enabled rolls.
  *
- * We do NOT modify the system DiceRoller output structure. Instead we attach
- * a parallel array aligned with ChatMessage.rolls:
- *   flags[MODULE_ID].diceTypes = ["base"|"special"|"fate", ...]
+ * IMPORTANT (Foundry v13):
+ * Mutating the `data` argument in preCreateChatMessage is not reliable.
+ * We persist changes via `doc.updateSource(...)`.
  *
- * This metadata will be used later to:
- * - compute a separate Fate-only result
- * - color Fate dice differently in the chat output
+ * Our transport strategy:
+ * - Primary: store diceTypes in message.rolls[0].options.rbFateDiceTypes (stable across rerenders)
+ * - Secondary: store diceTypes in flags[MODULE_ID].diceTypes (best-effort; may be rewritten)
  */
 export function registerFateDiceTypeTaggingHook() {
   Hooks.on("preCreateChatMessage", (doc, data) => {
     try {
       if (shouldEnableFate() !== true) return;
 
-      // Only roll messages created by the system DiceRoller include `rolls`.
       const rolls = data?.rolls;
       if (!Array.isArray(rolls) || rolls.length === 0) return;
 
-      // Consume the last Fate-applied container reference (one-shot, freshness guarded).
       const container = consumeLastFateRollContainer();
       if (!container) return;
 
       const diceTypes = computeDiceTypesForRollMessage(container, rolls);
+      if (!Array.isArray(diceTypes) || diceTypes.length === 0) return;
 
-      // Attach flags (do not overwrite existing module flags).
-      if (!data.flags) data.flags = {};
-      if (!data.flags[MODULE_ID]) data.flags[MODULE_ID] = {};
+      // We keep a cacheId for correlation/debugging only.
+      const cacheId = createCacheId();
 
-      data.flags[MODULE_ID].diceTypes = diceTypes;
-      data.flags[MODULE_ID].diceTypesVersion = 1;
+      // Prepare flags patch (secondary channel; may be overwritten by other code).
+      const existingFlags = (data?.flags && typeof data.flags === "object") ? data.flags : {};
+      const existingModuleFlags =
+        (existingFlags[MODULE_ID] && typeof existingFlags[MODULE_ID] === "object")
+          ? existingFlags[MODULE_ID]
+          : {};
 
-      // DEV: compact summary for quick verification (especially exploding dice inheritance).
+      const patchedFlags = foundry.utils.mergeObject(
+        foundry.utils.deepClone(existingFlags),
+        {
+          [MODULE_ID]: {
+            ...existingModuleFlags,
+            diceTypes,
+            diceTypesVersion: 1,
+            rbFateMetaVersion: 1,
+            rbFateCacheId: cacheId,
+          },
+        },
+        { inplace: false }
+      );
+
+      /**
+       * Primary channel (v13-stable):
+       * Persist diceTypes into rolls[0].options so they survive:
+       * - flags rewrites
+       * - rerenders
+       * - chat history reloads
+       *
+       * Store the full diceTypes array once on the first roll to avoid duplication.
+       */
+      const patchedRolls = rolls.map((r, idx) => {
+        const rr = foundry.utils.deepClone(r ?? {});
+        if (!rr.options || typeof rr.options !== "object") rr.options = {};
+
+        rr.options.rbFateMetaVersion = 1;
+        rr.options.rbFateCacheId = cacheId;
+
+        if (idx === 0) {
+          rr.options.rbFateDiceTypes = diceTypes;
+          rr.options.rbFateDiceTypesVersion = 1;
+        }
+
+        return rr;
+      });
+
+      // Persist into the creating document source.
+      doc.updateSource({
+        flags: patchedFlags,
+        rolls: patchedRolls,
+      });
+
       const summary = summarizeDiceTypes(diceTypes);
 
-      debug("Tagged dice types on chat message", {
-        actorId: container?.actor?.id,
-        origin: container?.origin,
+      debug("Tagged dice types on chat message (persisted via updateSource)", {
+        actorId: container?.actor?.id ?? null,
+        origin: container?.origin ?? null,
+        cacheId,
         rolls: rolls.length,
         tagged: diceTypes.length,
+        roll0OptionKeys: Object.keys(patchedRolls?.[0]?.options ?? {}),
         typesCount: summary.counts,
         typesRle: summary.rle,
       });
@@ -58,17 +105,22 @@ export function registerFateDiceTypeTaggingHook() {
 }
 
 /**
- * Compute a diceTypes array aligned with ChatMessage.rolls.
+ * Create a reasonably unique id for correlation/debugging.
  *
- * Requirements:
- * - Fate dice must be distinguishable from base dice.
- * - Exploding dice must inherit the SAME type as the die that exploded.
- * - For now, type must NOT affect success calculations (metadata only).
- *
- * @param {object} container DiceRollContainer used for the roll.
- * @param {Roll[]} rolls Array of 1d10 Roll objects from chat message data.
- * @returns {string[]} Array aligned with `rolls`.
+ * @returns {string}
  */
+function createCacheId() {
+  try {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  } catch (_err) {
+    // ignore
+  }
+
+  const ts = Date.now();
+  const rnd = Math.random().toString(16).slice(2);
+  return `rb-fate-${ts}-${rnd}`;
+}
+
 function computeDiceTypesForRollMessage(container, rolls) {
   const cfg = CONFIG?.worldofdarkness ?? {};
 
@@ -83,10 +135,6 @@ function computeDiceTypesForRollMessage(container, rolls) {
   // Fate dice count is stored on the container when Fate was applied.
   const fateCountRaw = Number(container?.__rusbarFateDiceCount ?? 0) || 0;
 
-  // Explode rules in system:
-  // - if useexplodingDice is enabled
-  // - and explodingDice === "always", explode on 10
-  // - or explodingDice === "speciality" and container.speciality === true
   const explodeEnabled = cfg.useexplodingDice === true;
   const explodeMode = String(cfg.explodingDice ?? "");
   const canExplodeOnThisRoll =
@@ -99,28 +147,19 @@ function computeDiceTypesForRollMessage(container, rolls) {
   for (const target of targetlist) {
     const baseTargetDice = Number(target?.numDices ?? 0) || 0;
 
-    // System uses: numberDices = target.numDices + diceRoll.woundpenalty; clamp to 0
     let numberDices = baseTargetDice + woundPenalty;
     if (numberDices < 0) numberDices = 0;
 
-    // Clamp Fate dice to the effective dice count for this target.
     const fateCount = Math.min(Math.max(0, fateCountRaw), numberDices);
-
-    // Base dice are the remainder.
     const baseCount = numberDices - fateCount;
 
-    // Special dice must not "eat into" Fate dice.
     const specialCount = Math.min(Math.max(0, specialCountRaw), baseCount);
 
-    // Build initial queue of types for this target:
-    // [special...][base...][fate...]
     const queue = [];
     for (let i = 0; i < specialCount; i += 1) queue.push("special");
     for (let i = 0; i < baseCount - specialCount; i += 1) queue.push("base");
     for (let i = 0; i < fateCount; i += 1) queue.push("fate");
 
-    // Consume rolls in the same order the system rolled them.
-    // If a die "explodes", we insert an extra die of the SAME type at the front of the queue.
     while (queue.length > 0 && rollIdx < rolls.length) {
       const dieType = queue.shift();
       const roll = rolls[rollIdx];
@@ -129,15 +168,12 @@ function computeDiceTypesForRollMessage(container, rolls) {
       out.push(dieType);
 
       const value = extractSingleD10Value(roll);
-
-      // Explosion rule: only when a 10 is rolled and the system explosion setting allows it.
       if (canExplodeOnThisRoll === true && value === 10) {
         queue.unshift(dieType);
       }
     }
   }
 
-  // If there are more rolls than we could account for (should be rare), tag as "unknown".
   while (rollIdx < rolls.length) {
     out.push("unknown");
     rollIdx += 1;
@@ -146,12 +182,6 @@ function computeDiceTypesForRollMessage(container, rolls) {
   return out;
 }
 
-/**
- * Extract a single d10 result value from a Roll object created as `new Roll("1d10")`.
- *
- * @param {Roll} roll
- * @returns {number} integer 1..10, or 0 if not available
- */
 function extractSingleD10Value(roll) {
   try {
     const term = roll?.terms?.[0];
@@ -164,14 +194,6 @@ function extractSingleD10Value(roll) {
   }
 }
 
-/**
- * Create a compact summary of dice types for debugging:
- * - counts by type
- * - run-length encoding string: "base×6 → fate×2 → base×1"
- *
- * @param {string[]} diceTypes
- * @returns {{ counts: Record<string, number>, rle: string }}
- */
 function summarizeDiceTypes(diceTypes) {
   const counts = {
     base: 0,

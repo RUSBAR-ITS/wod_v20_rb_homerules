@@ -15,6 +15,7 @@ import { registerUseFateCheckboxInjection } from "./fate/inject-fate-use-checkbo
 import { registerDiceContainerFatePatch } from "./fate/patch-dice-container-with-fate.js";
 import { registerRollDialogFatePatches } from "./fate/patch-roll-dialogs-with-fate.js";
 import { registerFateDiceTypeTaggingHook } from "./fate/tag-fate-dice-types.js";
+import { registerReplaceFateDiceInChatHook } from "./fate/replace-fate-dice-in-chat.js";
 
 const { debug, info, warn, error } = debugNs("init");
 
@@ -52,6 +53,12 @@ Hooks.once("init", () => {
    * This does NOT affect roll success calculation. It is metadata for later features.
    */
   registerFateDiceTypeTaggingHook();
+
+  /**
+   * Chat rendering integration:
+   * Replace Fate dice visuals in the system roll template using cached diceTypes metadata.
+   */
+  registerReplaceFateDiceInChatHook();
 
   debug("Init complete");
 });
