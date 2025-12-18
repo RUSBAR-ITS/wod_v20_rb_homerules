@@ -88,7 +88,7 @@ Hooks.once("ready", () => {
 Hooks.on("renderActorSheet", async (app, html) => {
   try {
     if (shouldEnableFate() !== true) return;
-    if (isVampireSheet(app?.actor) !== true) return;
+    if (isVampireSheet(app) !== true) return;
 
     ensureFateData(app.actor);
 
