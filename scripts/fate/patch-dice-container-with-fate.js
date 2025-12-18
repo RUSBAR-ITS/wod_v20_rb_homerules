@@ -32,6 +32,13 @@ function getGlobalCtx() {
       fateBonus: 0,
       consumeOnce: true,
       consumed: false,
+
+      /**
+       * Last roll container where Fate was actually applied.
+       * Used by chat hooks to tag dice types on the next roll message.
+       */
+      lastContainer: null,
+      lastContainerAtMs: 0,
     };
   }
 
@@ -66,6 +73,37 @@ export function clearFateContext() {
   ctx.consumed = false;
 
   debug("clearFateContext");
+}
+
+/**
+ * Consume the last DiceRollContainer where Fate dice were actually applied.
+ *
+ * This is used by chat hooks to tag dice types in the next ChatMessage.
+ * To avoid accidental cross-message tagging, we require the container to be "fresh".
+ *
+ * @param {number} [maxAgeMs=3000] - Max allowed age since Fate application.
+ * @returns {object|null} DiceRollContainer instance or null.
+ */
+export function consumeLastFateRollContainer(maxAgeMs = 3000) {
+  const ctx = getGlobalCtx();
+
+  const now = Date.now();
+  const age = now - (ctx.lastContainerAtMs || 0);
+
+  if (!ctx.lastContainer || age > maxAgeMs) {
+    // Clear stale reference (best-effort).
+    ctx.lastContainer = null;
+    ctx.lastContainerAtMs = 0;
+    return null;
+  }
+
+  const container = ctx.lastContainer;
+
+  // One-shot consumption.
+  ctx.lastContainer = null;
+  ctx.lastContainerAtMs = 0;
+
+  return container;
 }
 
 /**
@@ -136,6 +174,10 @@ export async function registerDiceContainerFatePatch() {
           const isExcluded = origin === "damage" || origin === "initiative";
 
           if (!isExcluded) {
+            // Mark Fate count on the container for later roll tagging.
+            // This does NOT affect success counting.
+            this.__rusbarFateDiceCount = ctx.fateBonus;
+
             v += ctx.fateBonus;
             debug("Applied Fate dice bonus on numDices assignment", {
               origin,
@@ -154,8 +196,7 @@ export async function registerDiceContainerFatePatch() {
              */
             const fateTextMarker = "__rusbarFateRollAddonTextAdded__";
             if (this?.[fateTextMarker] !== true) {
-              const fateLabel =
-                (game?.i18n?.localize?.("wod.advantages.fate") || "").trim() || "Fate";
+              const fateLabel = (game?.i18n?.localize?.("wod.advantages.fate") || "").trim() || "Fate";
               const fateText = `${fateLabel} (${ctx.fateBonus})`;
 
               if (!Array.isArray(this.dicetext)) this.dicetext = [];
@@ -168,6 +209,13 @@ export async function registerDiceContainerFatePatch() {
                 fateText,
               });
             }
+
+            /**
+             * Store this container as the "next roll to tag" for chat hooks.
+             * We only set this when Fate was actually applied to the dice pool.
+             */
+            ctx.lastContainer = this;
+            ctx.lastContainerAtMs = Date.now();
           } else {
             debug("Skipped Fate dice bonus due to excluded origin", { origin });
           }

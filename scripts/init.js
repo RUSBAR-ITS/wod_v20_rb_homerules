@@ -14,6 +14,7 @@ import { registerDisableWillpowerForFateHook } from "./fate/disable-willpower-fo
 import { registerUseFateCheckboxInjection } from "./fate/inject-fate-use-checkbox.js";
 import { registerDiceContainerFatePatch } from "./fate/patch-dice-container-with-fate.js";
 import { registerRollDialogFatePatches } from "./fate/patch-roll-dialogs-with-fate.js";
+import { registerFateDiceTypeTaggingHook } from "./fate/tag-fate-dice-types.js";
 
 const { debug, info, warn, error } = debugNs("init");
 
@@ -45,6 +46,12 @@ Hooks.once("init", () => {
   // These patches require dynamic imports; we log errors but do not hard-fail init.
   registerDiceContainerFatePatch().catch((err) => error("Failed to patch DiceRollContainer for Fate", err));
   registerRollDialogFatePatches().catch((err) => error("Failed to patch roll dialogs for Fate", err));
+
+  /**
+   * Tag dice types (base/special/fate) for Fate-enabled rolls in ChatMessage.flags.
+   * This does NOT affect roll success calculation. It is metadata for later features.
+   */
+  registerFateDiceTypeTaggingHook();
 
   debug("Init complete");
 });
@@ -81,14 +88,12 @@ Hooks.once("ready", () => {
 Hooks.on("renderActorSheet", async (app, html) => {
   try {
     if (shouldEnableFate() !== true) return;
-    if (!isVampireSheet(app)) return;
+    if (isVampireSheet(app?.actor) !== true) return;
 
-    // Ensure Fate fields exist on the actor.
-    await ensureFateData(app.actor);
+    ensureFateData(app.actor);
 
     /**
-     * Render (or re-render) the Fate scale wrapper into the sheet.
-     * This function is expected to be idempotent and use a wrapper marker.
+     * Render Fate scale UI wrapper on the sheet (idempotent).
      */
     await renderFateScale(app, html);
 
