@@ -11,6 +11,9 @@ import { ensureFateData } from "./fate/ensure-fate-data.js";
 import { renderFateScale } from "./fate/render-fate-scale.js";
 import { bindFateClicks } from "./fate/bind-fate-clicks.js";
 import { registerDisableWillpowerForFateHook } from "./fate/disable-willpower-for-fate.js";
+import { registerUseFateCheckboxInjection } from "./fate/inject-fate-use-checkbox.js";
+import { registerDiceContainerFatePatch } from "./fate/patch-dice-container-with-fate.js";
+import { registerRollDialogFatePatches } from "./fate/patch-roll-dialogs-with-fate.js";
 
 const { debug, info, warn, error } = debugNs("init");
 
@@ -30,6 +33,18 @@ Hooks.once("init", () => {
    * This is a UI-layer fix and should be registered early.
    */
   registerDisableWillpowerForFateHook();
+
+  /**
+   * Roll dialog integration:
+   * - inject "Use Fate" checkbox into upstream roll dialogs
+   * - patch roll dialog prototypes (no system file changes)
+   * - patch DiceRollContainer so Fate dice can be applied on assignment
+   */
+  registerUseFateCheckboxInjection();
+
+  // These patches require dynamic imports; we log errors but do not hard-fail init.
+  registerDiceContainerFatePatch().catch((err) => error("Failed to patch DiceRollContainer for Fate", err));
+  registerRollDialogFatePatches().catch((err) => error("Failed to patch roll dialogs for Fate", err));
 
   debug("Init complete");
 });
@@ -58,36 +73,21 @@ Hooks.once("ready", () => {
  * - the feature is enabled in module settings
  * - the sheet is a Vampire sheet (our supported target)
  *
- * Sequence:
- * 1) ensure Fate data exists and is normalized (including `roll` sync)
- * 2) render/inject Fate scale HTML
- * 3) bind Fate click handlers (steps + headline roll)
- *
- * NOTE:
- * This is executed on every sheet render, so the code must be safe and idempotent.
+ * Workflow:
+ * - Ensure data exists (idempotent)
+ * - Render Fate scale UI
+ * - Bind click handlers for updating data and opening roll dialog
  */
 Hooks.on("renderActorSheet", async (app, html) => {
   try {
-    // Feature gating: do nothing if Fate is disabled.
-    if (!shouldEnableFate()) return;
-
-    // Sheet gating: do nothing if this is not a vampire sheet we support.
+    if (shouldEnableFate() !== true) return;
     if (!isVampireSheet(app)) return;
 
-    const actor = app.actor;
-    if (!actor) return;
+    // Ensure Fate fields exist on the actor.
+    await ensureFateData(app.actor);
 
     /**
-     * Ensure actor has the Fate structure and `advantages.fate.roll` is synchronized
-     * with the chosen roll policy (permanent/temporary).
-     *
-     * This is required because the upstream `DialogGeneralRoll` for "noability"
-     * reads dice pool from `advantages.<key>.roll`.
-     */
-    await ensureFateData(actor);
-
-    /**
-     * Render Fate scale and inject it into the sheet DOM.
+     * Render (or re-render) the Fate scale wrapper into the sheet.
      * This function is expected to be idempotent and use a wrapper marker.
      */
     await renderFateScale(app, html);

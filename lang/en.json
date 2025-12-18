@@ -13,7 +13,8 @@
         }
       },
       "fate": {
-        "label": "Fate"
+        "label": "Fate",
+        "useFate": "Use Fate"
       }
     }
   }

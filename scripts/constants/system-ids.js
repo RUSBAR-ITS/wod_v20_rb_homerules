@@ -21,4 +21,20 @@ export const SYSTEM_IDS = Object.freeze({
    * Must be absolute (leading slash) to avoid URL-relative resolution issues.
    */
   DIALOG_GENERAL_ROLL_MODULE_PATH: "/systems/worldofdarkness/module/dialogs/dialog-generalroll.js",
+
+  /**
+   * Absolute module path to the upstream roll engine.
+   */
+  ROLL_DICE_MODULE_PATH: "/systems/worldofdarkness/module/scripts/roll-dice.js",
+
+  /**
+   * Absolute module paths to upstream roll dialogs we patch.
+   */
+  DIALOG_SOAK_MODULE_PATH: "/systems/worldofdarkness/module/dialogs/dialog-soak.js",
+  DIALOG_WEAPON_MODULE_PATH: "/systems/worldofdarkness/module/dialogs/dialog-weapon.js",
+  DIALOG_POWER_MODULE_PATH: "/systems/worldofdarkness/module/dialogs/dialog-power.js",
+  DIALOG_ITEM_MODULE_PATH: "/systems/worldofdarkness/module/dialogs/dialog-item.js",
+  DIALOG_TRAIT_MODULE_PATH: "/systems/worldofdarkness/module/dialogs/dialog-trait.js",
+  DIALOG_ARETE_MODULE_PATH: "/systems/worldofdarkness/module/dialogs/dialog-aretecasting.js",
+  DIALOG_FRENZY_MODULE_PATH: "/systems/worldofdarkness/module/dialogs/dialog-checkfrenzy.js",
 });
