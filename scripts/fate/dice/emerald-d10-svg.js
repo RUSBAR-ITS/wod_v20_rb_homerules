@@ -30,6 +30,11 @@ export function buildEmeraldD10Svg(value, opts = {}) {
 
   const v = clampD10Value(value);
 
+  // Visual-only rule:
+  // On d10 dice faces, the value "10" is traditionally displayed as "0".
+  // This MUST NOT affect any roll logic (successes, botches, etc.).
+  const displayValue = v === 10 ? 0 : v;
+
   // NOTE: Geometry copied from Foundry_WoD20/module/scripts/icons.js :: IconsHelper._getxD10
   // and only styling was changed.
   const svg = `<svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 64 64" style="enable-background:new 0 0 64 64; height: ${height}px; width: ${width}px;" xml:space="preserve">
@@ -42,10 +47,10 @@ export function buildEmeraldD10Svg(value, opts = {}) {
       <path d="M261.8,161.7v4.5l-20-15.4l6.9,2.7L261.8,161.7z" fill="${EMERALD_FACE}" stroke="${EDGE_STROKE}" />
     </g>
   </g>
-  <text class="dice_roll" x="32" y="36" fill="${DIGIT_GOLD}" stroke="${DIGIT_STROKE}" stroke-width="0.8" paint-order="stroke" font-size="25" font-weight="bold" text-anchor="middle" dominant-baseline="middle">${v}</text>
+  <text class="dice_roll" x="32" y="36" fill="${DIGIT_GOLD}" stroke="${DIGIT_STROKE}" stroke-width="0.8" paint-order="stroke" font-size="25" font-weight="bold" text-anchor="middle" dominant-baseline="middle">${displayValue}</text>
 </svg>`;
 
-  debug("Built emerald D10 SVG", { value: v, height, width });
+  debug("Built emerald D10 SVG", { value: v, displayValue, height, width });
   return svg;
 }
 
