@@ -7,6 +7,10 @@
           "name": "Enable Fate rules",
           "hint": "Adds the Fate resource to Vampire sheets (willpower-like scale)."
         },
+        "evilBotches": {
+          "name": "Evil Botches",
+          "hint": "Enables alternative botch handling rules (implemented by this module)."
+        },
         "enableDebug": {
           "name": "Enable debug logging",
           "hint": "Enables extended debug logging for the module."
@@ -19,6 +23,13 @@
         "chat": {
           "resultSuccess": "Fate Success: {value}",
           "resultBotch": "Fate Botch: {value}"
+        }
+      },
+      "evilBotches": {
+        "chat": {
+          "failure": "Failure",
+          "success": "Success: {value}",
+          "botch": "Botch: {value}"
         }
       }
     }

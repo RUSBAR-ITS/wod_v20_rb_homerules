@@ -17,6 +17,7 @@ import { registerRollDialogFatePatches } from "./fate/patch-roll-dialogs-with-fa
 import { registerFateDiceTypeTaggingHook } from "./fate/tag-fate-dice-types.js";
 import { registerReplaceFateDiceInChatHook } from "./fate/replace-fate-dice-in-chat.js";
 import { registerInsertFateResultInChatHook } from "./fate/insert-fate-result-in-chat.js";
+import { registerEvilBotchesChatHook } from "./evil-botches/evil-botches-in-chat.js";
 
 const { debug, info, warn, error } = debugNs("init");
 
@@ -66,6 +67,13 @@ Hooks.once("init", () => {
    * Insert Fate-specific outcome line (10s vs 1s delta) under the base system success line.
    */
   registerInsertFateResultInChatHook();
+
+  /**
+   * Chat rendering integration:
+   * Evil Botches: if ones > rawSuccessDice (before subtracting ones), show "Botch: X".
+   * This only applies when the system setting "subtract ones" is enabled (CONFIG.worldofdarkness.handleOnes).
+   */
+  registerEvilBotchesChatHook();
 
   debug("Init complete");
 });

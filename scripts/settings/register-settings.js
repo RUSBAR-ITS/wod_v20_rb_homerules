@@ -38,6 +38,24 @@ export function registerSettings() {
   });
 
   /**
+   * evilBotches:
+   * - A rules toggle that enables alternative botch handling.
+   * - NOTE: Only the setting is introduced in this task. Rule logic will be added later.
+   */
+  game.settings.register(MODULE_ID, SETTINGS_KEYS.EVIL_BOTCHES, {
+    name: "rusbar.homerules.settings.evilBotches.name",
+    hint: "rusbar.homerules.settings.evilBotches.hint",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: () => {
+      // Intentionally no logger usage here.
+      // This setting will be read by the future rule implementation.
+    }
+  });
+
+  /**
    * enableDebug:
    * - Enables extended debug logging for THIS module.
    * - This does not affect the system itself.
