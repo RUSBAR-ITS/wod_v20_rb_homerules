@@ -19,6 +19,7 @@ import { registerReplaceFateDiceInChatHook } from "./fate/replace-fate-dice-in-c
 import { registerInsertFateResultInChatHook } from "./fate/insert-fate-result-in-chat.js";
 import { registerEvilBotchesChatHook } from "./evil-botches/evil-botches-in-chat.js";
 import { registerFateDiceSoNiceColorsetHook } from "./fate/dice/register-dsn-fate-colorset.js";
+import { injectBloodpoolExtras } from "./vampire/bloodpool/inject-bloodpool-extras.js";
 
 const { debug, info, warn, error } = debugNs("init");
 
@@ -117,8 +118,17 @@ Hooks.once("ready", () => {
  */
 Hooks.on("renderActorSheet", async (app, html) => {
   try {
-    if (shouldEnableFate() !== true) return;
+    // Our module currently targets Vampire sheets only.
     if (isVampireSheet(app) !== true) return;
+
+    /**
+     * Home-rules UI: inject derived Blood Pool information.
+     * This is purely a UI operation and must be idempotent.
+     */
+    injectBloodpoolExtras(app, html);
+
+    // Fate UI is optional and controlled by the module setting.
+    if (shouldEnableFate() !== true) return;
 
     ensureFateData(app.actor);
 

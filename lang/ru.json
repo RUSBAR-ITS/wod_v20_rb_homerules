@@ -31,6 +31,12 @@
           "success": "Успех: {value}",
           "botch": "Провал: {value}"
         }
+      },
+      "vampire": {
+        "bloodpool": {
+          "wakeCost": "Трата крови на пробуждение: {value}",
+          "hunger": "Голод: {value}"
+        }
       }
     }
   }

@@ -31,6 +31,12 @@
           "success": "Success: {value}",
           "botch": "Botch: {value}"
         }
+      },
+      "vampire": {
+        "bloodpool": {
+          "wakeCost": "Wake blood cost: {value}",
+          "hunger": "Hunger: {value}"
+        }
       }
     }
   }
