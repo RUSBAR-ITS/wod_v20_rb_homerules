@@ -16,6 +16,7 @@ import { registerDiceContainerFatePatch } from "./fate/patch-dice-container-with
 import { registerRollDialogFatePatches } from "./fate/patch-roll-dialogs-with-fate.js";
 import { registerFateDiceTypeTaggingHook } from "./fate/tag-fate-dice-types.js";
 import { registerReplaceFateDiceInChatHook } from "./fate/replace-fate-dice-in-chat.js";
+import { registerInsertFateResultInChatHook } from "./fate/insert-fate-result-in-chat.js";
 
 const { debug, info, warn, error } = debugNs("init");
 
@@ -59,6 +60,12 @@ Hooks.once("init", () => {
    * Replace Fate dice visuals in the system roll template using cached diceTypes metadata.
    */
   registerReplaceFateDiceInChatHook();
+
+  /**
+   * Chat rendering integration:
+   * Insert Fate-specific outcome line (10s vs 1s delta) under the base system success line.
+   */
+  registerInsertFateResultInChatHook();
 
   debug("Init complete");
 });

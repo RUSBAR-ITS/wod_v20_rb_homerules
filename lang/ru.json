@@ -15,7 +15,11 @@
       "fate": {
         "label": "Судьба",
         "useFate": "Использовать Судьбу",
-        "rollAddon": "Судьба ({bonus})"
+        "rollAddon": "Судьба ({bonus})",
+        "chat": {
+          "resultSuccess": "Успех Судьбы: {value}",
+          "resultBotch": "Провал Судьбы: {value}"
+        }
       }
     }
   }

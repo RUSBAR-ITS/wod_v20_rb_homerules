@@ -15,7 +15,11 @@
       "fate": {
         "label": "Fate",
         "useFate": "Use Fate",
-        "rollAddon": "Fate ({bonus})"
+        "rollAddon": "Fate ({bonus})",
+        "chat": {
+          "resultSuccess": "Fate Success: {value}",
+          "resultBotch": "Fate Botch: {value}"
+        }
       }
     }
   }
