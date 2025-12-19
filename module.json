@@ -1,7 +1,7 @@
 {
   "id": "rusbar-homerules-for-wod-v20-system",
   "title": "RUSBAR Homerules for WoD v20 system",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "compatibility": {
     "minimum": "13",
     "verified": "13"
