@@ -75,6 +75,13 @@ export function registerFateDiceTypeTaggingHook() {
           rr.options.rbFateDiceTypesVersion = 1;
         }
 
+        // Dice So Nice integration:
+        // Assign DSN colorset to Fate dice only (visual-only).
+        const dieType = diceTypes[idx] ?? "unknown";
+        if (dieType === "fate") {
+          applyFateAppearanceToSingleD10Roll(rr);
+        }
+
         return rr;
       });
 
@@ -86,12 +93,16 @@ export function registerFateDiceTypeTaggingHook() {
 
       const summary = summarizeDiceTypes(diceTypes);
 
+      // Debug (helps to confirm DSN appearance tagging actually happened).
+      const fateAppearanceApplied = countFateAppearanceApplied(patchedRolls, diceTypes);
+
       debug("Tagged dice types on chat message (persisted via updateSource)", {
         actorId: container?.actor?.id ?? null,
         origin: container?.origin ?? null,
         cacheId,
         rolls: rolls.length,
         tagged: diceTypes.length,
+        fateAppearanceApplied,
         roll0OptionKeys: Object.keys(patchedRolls?.[0]?.options ?? {}),
         typesCount: summary.counts,
         typesRle: summary.rle,
@@ -189,6 +200,49 @@ function extractSingleD10Value(roll) {
     const v = Number.parseInt(result, 10);
     if (Number.isFinite(v)) return v;
     return 0;
+  } catch (_err) {
+    return 0;
+  }
+}
+
+/**
+ * Apply Dice So Nice colorset to a single-d10 roll (visual-only).
+ *
+ * We do NOT hardcode colors here. The colorset is registered in `register-dsn-fate-colorset.js`.
+ * DSN versions differ in which field they read, so we set a few common variants.
+ */
+function applyFateAppearanceToSingleD10Roll(rollJson) {
+  try {
+    const term0 = rollJson?.terms?.[0];
+    if (!term0 || typeof term0 !== "object") return;
+
+    if (!term0.options || typeof term0.options !== "object") term0.options = {};
+
+    const COLORSET_NAME = "rb-fate-emerald";
+
+    // Most compatible: set colorset in appearance and as a direct option.
+    term0.options.appearance = { ...(term0.options.appearance ?? {}), colorset: COLORSET_NAME };
+    term0.options.colorset = COLORSET_NAME;
+  } catch (_err) {
+    // ignore
+  }
+}
+
+function countFateAppearanceApplied(patchedRolls, diceTypes) {
+  try {
+    let n = 0;
+
+    for (let i = 0; i < patchedRolls.length; i += 1) {
+      if (diceTypes?.[i] !== "fate") continue;
+
+      const term0 = patchedRolls[i]?.terms?.[0];
+      const app = term0?.options?.appearance;
+
+      // We consider it applied if colorset is present on the dice term.
+      if (app && typeof app === "object" && typeof app.colorset === "string" && app.colorset.length > 0) n += 1;
+    }
+
+    return n;
   } catch (_err) {
     return 0;
   }

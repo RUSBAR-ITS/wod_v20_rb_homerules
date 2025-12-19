@@ -18,6 +18,7 @@ import { registerFateDiceTypeTaggingHook } from "./fate/tag-fate-dice-types.js";
 import { registerReplaceFateDiceInChatHook } from "./fate/replace-fate-dice-in-chat.js";
 import { registerInsertFateResultInChatHook } from "./fate/insert-fate-result-in-chat.js";
 import { registerEvilBotchesChatHook } from "./evil-botches/evil-botches-in-chat.js";
+import { registerFateDiceSoNiceColorsetHook } from "./fate/dice/register-dsn-fate-colorset.js";
 
 const { debug, info, warn, error } = debugNs("init");
 
@@ -31,6 +32,13 @@ const { debug, info, warn, error } = debugNs("init");
  */
 Hooks.once("init", () => {
   registerSettings();
+
+  /**
+   * Dice So Nice integration:
+   * Register Fate colorset (emerald/gold) when DSN is ready.
+   * Assigning the colorset to Fate dice is done when we tag dice types on chat messages.
+   */
+  registerFateDiceSoNiceColorsetHook();
 
   /**
    * Disable Willpower option for Fate rolls in the upstream General Roll dialog.
