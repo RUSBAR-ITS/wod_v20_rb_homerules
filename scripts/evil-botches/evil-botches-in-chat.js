@@ -33,25 +33,47 @@ export function registerEvilBotchesChatHook() {
       const root = html?.[0] ?? html;
       if (!(root instanceof HTMLElement)) return;
 
-      const difficulty = extractDifficultyFromChatCard(root);
-      if (!Number.isFinite(difficulty) || difficulty <= 0) return;
+      const diff = extractDifficultyFromChatCard(root);
+      if (!Number.isFinite(diff.difficulty) || diff.difficulty <= 0) {
+        debug("Evil Botches: difficulty not found, skipping message", {
+          messageId: message?.id,
+          reason: diff.reason,
+          extractedLabel: diff.label,
+          infoLines: diff.infoLines,
+        });
+        return;
+      }
+
+      const difficulty = diff.difficulty;
 
       const rollAreas = Array.from(root.querySelectorAll(".tray-roll-area"));
-      if (rollAreas.length === 0) return;
+      if (rollAreas.length === 0) {
+        debug("Evil Botches: no roll areas found in chat card", { messageId: message?.id });
+        return;
+      }
 
       let replaced = 0;
 
       for (const area of rollAreas) {
         const successArea = area.querySelector(".tray-success-area");
-        if (!successArea) continue;
+        if (!successArea) {
+          debug("Evil Botches: roll area has no .tray-success-area, skipping", { messageId: message?.id });
+          continue;
+        }
 
         // System template renders result lines as direct <div> children inside `.tray-success-area`.
         // We replace the whole content with a single line (per requirements).
         const directDivs = successArea.querySelectorAll(":scope > div");
-        if (directDivs.length === 0) continue;
+        if (directDivs.length === 0) {
+          debug("Evil Botches: no direct divs found in success area", { messageId: message?.id });
+          continue;
+        }
 
         const diceImgs = Array.from(area.querySelectorAll("img.wod-svg"));
-        if (diceImgs.length === 0) continue;
+        if (diceImgs.length === 0) {
+          debug("Evil Botches: no dice images found in roll area", { messageId: message?.id });
+          continue;
+        }
 
         const isSpecialized = detectSpecializationInRollArea(area);
 
@@ -199,8 +221,10 @@ function detectSpecializationInRollArea(area) {
   try {
     // Try to find a localized label if the system provides one.
     // If the key does not exist, localize() returns the key; we guard against that.
-    const label = game.i18n.localize("wod.dice.speciality");
-    const hasRealLabel = typeof label === "string" && label !== "wod.dice.speciality";
+    // WoD20 system prints specialization as a separate info line using `wod.dialog.usingspeciality`.
+    // (See system `roll-dice.js`.)
+    const label = game.i18n.localize("wod.dialog.usingspeciality");
+    const hasRealLabel = typeof label === "string" && label !== "wod.dialog.usingspeciality";
 
     const infoRoot =
       area.querySelector(".tray-info-area") ||
@@ -250,21 +274,45 @@ function buildOutcome(successes, ones) {
 
 function extractDifficultyFromChatCard(root) {
   try {
-    const label = game.i18n.localize("wod.dice.difficulty");
-    const infoLines = Array.from(root.querySelectorAll(".tray-info-area .tray-action-area"));
+    // WoD20 system prints difficulty as `${localize("wod.labels.difficulty")}: ${difficulty}`.
+    // (See system `roll-dice.js`.)
+    const label = game.i18n.localize("wod.labels.difficulty");
 
-    const diffLine = infoLines.find((el) => {
-      const t = (el?.textContent ?? "").trim();
-      return t.length > 0 && t.includes(label);
-    });
+    const infoEls = Array.from(root.querySelectorAll(".tray-info-area .tray-action-area"));
+    const infoLines = infoEls
+      .map((el) => (el?.textContent ?? "").trim())
+      .filter((t) => t.length > 0);
 
-    const raw = (diffLine?.textContent ?? "").trim();
+    // 1) Preferred: match by localized label.
+    const diffLineByLabel = infoLines.find((t) => t.includes(label));
+
+    // 2) Fallback: match by conservative RU/EN substring heuristics.
+    const diffLineByHeuristic =
+      diffLineByLabel ??
+      infoLines.find((t) => {
+        const low = t.toLowerCase();
+        return low.includes("difficulty") || low.includes("сложн");
+      });
+
+    const raw = (diffLineByHeuristic ?? "").trim();
     const m = raw.match(/(\d+)/);
-    if (!m) return NaN;
+    if (!m) {
+      return {
+        difficulty: NaN,
+        label,
+        reason: "no_number_match",
+        infoLines,
+      };
+    }
 
-    return Number.parseInt(m[1], 10);
+    return {
+      difficulty: Number.parseInt(m[1], 10),
+      label,
+      reason: diffLineByLabel ? "matched_by_label" : "matched_by_heuristic",
+      infoLines,
+    };
   } catch (_err) {
-    return NaN;
+    return { difficulty: NaN, label: "", reason: "exception", infoLines: [] };
   }
 }
 
