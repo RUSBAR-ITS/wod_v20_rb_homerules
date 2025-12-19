@@ -15,6 +15,10 @@ const { debug, warn, error } = debugNs("evil-botches:chat");
  * - If successes > ones => "Success: X" where X = successes - ones
  * - If ones > successes => "Botch: X" where X = ones - successes
  *
+ * Additionally, when the user enabled "Use Willpower" for the roll:
+ * - If (successes - ones) > 0 => add +1 success
+ * - Else (failure or botch) => force 1 success (so with willpower there is always at least 1 success)
+ *
  * Definitions:
  * - successes: raw successes BEFORE subtracting ones,
  *   INCLUDING system-configured extra successes from 10s and specialization (if enabled).
@@ -52,6 +56,12 @@ export function registerEvilBotchesChatHook() {
         return;
       }
 
+      // NOTE:
+      // The system template places `.tray-info-area` once per message, *outside* any `.tray-roll-area`.
+      // So specialization/willpower flags must be detected on the whole card (`root`), not per roll-area.
+      const isSpecialized = detectSpecializationInChatCard(root);
+      const isWillpowerUsed = detectWillpowerInChatCard(root);
+
       let replaced = 0;
 
       for (const area of rollAreas) {
@@ -74,8 +84,6 @@ export function registerEvilBotchesChatHook() {
           debug("Evil Botches: no dice images found in roll area", { messageId: message?.id });
           continue;
         }
-
-        const isSpecialized = detectSpecializationInRollArea(area);
 
         let ones = 0;
         let successes = 0;
@@ -102,8 +110,8 @@ export function registerEvilBotchesChatHook() {
           }
         }
 
-        // Decide output per requirements.
-        const out = buildOutcome(successes, ones);
+        // Decide output per requirements (+ willpower rule).
+        const out = buildOutcome(successes, ones, isWillpowerUsed);
 
         // Replace vanilla lines completely.
         // Keep "danger" styling for botch, and "success" styling for success (via existing classes).
@@ -135,9 +143,10 @@ export function registerEvilBotchesChatHook() {
           messageId: message?.id,
           difficulty,
           isSpecialized,
+          isWillpowerUsed,
           ones,
           successesBeforeSubtractOnes: successes,
-          net: successes - ones,
+          netBeforeWillpower: successes - ones,
           outcome: out,
           diceCount: diceImgs.length,
           tenValue: getTenSuccessValue(isSpecialized),
@@ -211,38 +220,31 @@ function getTenSuccessValue(isSpecialized) {
 /**
  * Best-effort specialization detection without touching system internals.
  *
- * We do NOT have reliable specialization flags on generic rolls.
- * The system typically indicates specialization in the chat card info section.
- * We try to detect it from `.tray-info-area` content within the same roll-area.
- *
- * If detection fails, we safely assume "not specialized" to avoid false positives.
+ * The system indicates specialization in the chat card info section.
+ * The `.tray-info-area` is a *single* block per message.
  */
-function detectSpecializationInRollArea(area) {
+function detectSpecializationInChatCard(root) {
   try {
-    // Try to find a localized label if the system provides one.
-    // If the key does not exist, localize() returns the key; we guard against that.
-    // WoD20 system prints specialization as a separate info line using `wod.dialog.usingspeciality`.
-    // (See system `roll-dice.js`.)
-    const label = game.i18n.localize("wod.dialog.usingspeciality");
-    const hasRealLabel = typeof label === "string" && label !== "wod.dialog.usingspeciality";
+    // WoD20 system prints specialization as a separate info line when enabled.
+    // In some versions it is `wod.dialog.usingspeciality`, in others it can be `wod.dice.speciality`.
+    const labelCandidates = [
+      "wod.dialog.usingspeciality",
+      "wod.dice.speciality",
+      "wod.dice.speciality", // kept for backwards compatibility (same key, no harm)
+    ];
 
-    const infoRoot =
-      area.querySelector(".tray-info-area") ||
-      area.closest(".tray-roll-area")?.querySelector(".tray-info-area") ||
-      null;
-
+    const infoRoot = root.querySelector(".tray-info-area");
     if (!infoRoot) return false;
 
     const text = (infoRoot.textContent ?? "").trim().toLowerCase();
     if (text.length === 0) return false;
 
-    if (hasRealLabel) {
+    for (const key of labelCandidates) {
+      const label = game.i18n.localize(key);
+      const hasRealLabel = typeof label === "string" && label !== key;
+      if (!hasRealLabel) continue;
       const l = label.trim().toLowerCase();
-      if (l.length > 0 && text.includes(l)) {
-        // Any mention of specialization label is considered "specialized" for this roll.
-        // This matches how the system presents "Specialization" only when enabled.
-        return true;
-      }
+      if (l.length > 0 && text.includes(l)) return true;
     }
 
     // Fallback heuristics for RU/EN UI strings often used around specialization:
@@ -256,7 +258,48 @@ function detectSpecializationInRollArea(area) {
   }
 }
 
-function buildOutcome(successes, ones) {
+/**
+ * Willpower usage detection from chat card info.
+ *
+ * The system prints `wod.dice.usingwillpower` as an info line when the roll used willpower.
+ */
+function detectWillpowerInChatCard(root) {
+  try {
+    const infoRoot = root.querySelector(".tray-info-area");
+    if (!infoRoot) return false;
+
+    const label = game.i18n.localize("wod.dice.usingwillpower");
+    const hasRealLabel = typeof label === "string" && label !== "wod.dice.usingwillpower";
+
+    const text = (infoRoot.textContent ?? "").trim().toLowerCase();
+    if (text.length === 0) return false;
+
+    if (hasRealLabel) {
+      const l = label.trim().toLowerCase();
+      if (l.length > 0 && text.includes(l)) return true;
+    }
+
+    // Fallback heuristics (conservative).
+    if (text.includes("willpower")) return true;
+    if (text.includes("сила") && text.includes("вол")) return true;
+
+    return false;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function buildOutcome(successes, ones, isWillpowerUsed) {
+  // Apply homerule for Willpower:
+  // - if net > 0 => net + 1
+  // - else => 1
+  if (isWillpowerUsed === true) {
+    const net = successes - ones;
+    if (net > 0) return { kind: "success", value: net + 1 };
+    return { kind: "success", value: 1 };
+  }
+
+  // Vanilla "evil botches" outcome.
   if (successes === 0 && ones === 0) {
     return { kind: "failure", value: 0 };
   }

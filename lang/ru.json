@@ -28,8 +28,8 @@
       "evilBotches": {
         "chat": {
           "failure": "Неудача",
-          "success": "Success: {value}",
-          "botch": "Botch: {value}"
+          "success": "Успех: {value}",
+          "botch": "Ботч: {value}"
         }
       }
     }
