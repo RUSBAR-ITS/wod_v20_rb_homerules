@@ -22,103 +22,129 @@ const { debug, warn, error } = debugNs("fate:chat:result");
  */
 export function registerInsertFateResultInChatHook() {
   Hooks.on("renderChatMessageHTML", (message, html) => {
-    try {
-      if (shouldEnableFate() !== true) return;
+    // IMPORTANT:
+    // Evil Botches replaces `.tray-success-area` contents in the same render cycle.
+    // If we insert our Fate line synchronously, it may be removed by a later hook.
+    // Defer to a microtask so we run after all synchronous `renderChatMessageHTML` handlers.
+    deferMicrotask(() => {
+      try {
+        if (shouldEnableFate() !== true) return;
 
-      const rollCount = Array.isArray(message?.rolls) ? message.rolls.length : 0;
-      if (rollCount === 0) return;
+        const rollCount = Array.isArray(message?.rolls) ? message.rolls.length : 0;
+        if (rollCount === 0) return;
 
-      // Foundry typically passes a jQuery object here; we support both jQuery and HTMLElement.
-      const root = html?.[0] ?? html;
-      if (!(root instanceof HTMLElement)) return;
+        // Foundry typically passes a jQuery object here; we support both jQuery and HTMLElement.
+        const root = html?.[0] ?? html;
+        if (!(root instanceof HTMLElement)) return;
 
-      const { diceTypes, diceTypesSource, cacheId } = extractFateMeta(message);
+        const { diceTypes, diceTypesSource, cacheId } = extractFateMeta(message);
 
-      // Quietly ignore messages without our Fate metadata.
-      if (!Array.isArray(diceTypes) || diceTypes.length === 0) return;
+        // Quietly ignore messages without our Fate metadata.
+        if (!Array.isArray(diceTypes) || diceTypes.length === 0) return;
 
-      const allDiceImgs = Array.from(root.querySelectorAll("img.wod-svg"));
-      if (allDiceImgs.length === 0) return;
+        const allDiceImgs = Array.from(root.querySelectorAll("img.wod-svg"));
+        if (allDiceImgs.length === 0) return;
 
-      const n = Math.min(allDiceImgs.length, diceTypes.length);
+        const n = Math.min(allDiceImgs.length, diceTypes.length);
 
-      // Map each dice image element to its stable global index.
-      const imgIndex = new Map();
-      for (let i = 0; i < n; i += 1) imgIndex.set(allDiceImgs[i], i);
+        // Map each dice image element to its stable global index.
+        const imgIndex = new Map();
+        for (let i = 0; i < n; i += 1) imgIndex.set(allDiceImgs[i], i);
 
-      const rollAreas = Array.from(root.querySelectorAll(".tray-roll-area"));
-      if (rollAreas.length === 0) return;
+        const rollAreas = Array.from(root.querySelectorAll(".tray-roll-area"));
+        if (rollAreas.length === 0) return;
 
-      let removed = 0;
-      let inserted = 0;
+        let removed = 0;
+        let inserted = 0;
 
-      for (const area of rollAreas) {
-        // Idempotency: remove our previous line on rerender.
-        const existing = area.querySelectorAll(".rb-fate-result-line");
-        if (existing.length > 0) {
-          existing.forEach((el) => el.remove());
-          removed += existing.length;
+        for (const area of rollAreas) {
+          // Idempotency: remove our previous line on rerender.
+          const existing = area.querySelectorAll(".rb-fate-result-line");
+          if (existing.length > 0) {
+            existing.forEach((el) => el.remove());
+            removed += existing.length;
+          }
+
+          const diceImgs = Array.from(area.querySelectorAll("img.wod-svg"));
+          if (diceImgs.length === 0) continue;
+
+          let ones = 0;
+          let tens = 0;
+
+          for (const img of diceImgs) {
+            const idx = imgIndex.get(img);
+            if (Number.isInteger(idx) !== true) continue;
+            if (diceTypes[idx] !== "fate") continue;
+
+            const value = extractDieValueFromImg(img);
+            if (value === 1) ones += 1;
+            if (value === 10) tens += 1;
+          }
+
+          // Apply requested rules.
+          const delta = tens - ones;
+          if (delta === 0) continue;
+
+          const successArea = area.querySelector(".tray-success-area");
+          if (!successArea) continue;
+
+          // System template usually uses direct <div> children; the last one is the "Successes: N" line.
+          // With Evil Botches enabled, there is still a last direct div (the replaced result line).
+          const directDivs = successArea.querySelectorAll(":scope > div");
+          const successLine = directDivs.length > 0 ? directDivs[directDivs.length - 1] : null;
+          if (!(successLine instanceof HTMLElement)) continue;
+
+          const line = document.createElement("div");
+          line.classList.add("rb-fate-result-line");
+
+          if (delta > 0) {
+            line.textContent = game.i18n.format("rusbar.homerules.fate.chat.resultSuccess", {
+              value: Math.abs(delta),
+            });
+          } else {
+            line.textContent = game.i18n.format("rusbar.homerules.fate.chat.resultBotch", {
+              value: Math.abs(delta),
+            });
+          }
+
+          successLine.insertAdjacentElement("afterend", line);
+          inserted += 1;
         }
 
-        const diceImgs = Array.from(area.querySelectorAll("img.wod-svg"));
-        if (diceImgs.length === 0) continue;
-
-        let ones = 0;
-        let tens = 0;
-
-        for (const img of diceImgs) {
-          const idx = imgIndex.get(img);
-          if (Number.isInteger(idx) !== true) continue;
-          if (diceTypes[idx] !== "fate") continue;
-
-          const value = extractDieValueFromImg(img);
-          if (value === 1) ones += 1;
-          if (value === 10) tens += 1;
-        }
-
-        // Apply requested rules.
-        const delta = tens - ones;
-        if (delta === 0) continue;
-
-        const successArea = area.querySelector(".tray-success-area");
-        if (!successArea) continue;
-
-        // System template usually uses direct <div> children; the last one is the "Successes: N" line.
-        const directDivs = successArea.querySelectorAll(":scope > div");
-        const successLine = directDivs.length > 0 ? directDivs[directDivs.length - 1] : null;
-        if (!(successLine instanceof HTMLElement)) continue;
-
-        const line = document.createElement("div");
-        line.classList.add("rb-fate-result-line");
-
-        if (delta > 0) {
-          line.textContent = game.i18n.format("rusbar.homerules.fate.chat.resultSuccess", {
-            value: Math.abs(delta),
-          });
-        } else {
-          line.textContent = game.i18n.format("rusbar.homerules.fate.chat.resultBotch", {
-            value: Math.abs(delta),
-          });
-        }
-
-        successLine.insertAdjacentElement("afterend", line);
-        inserted += 1;
+        debug("Fate result line processed", {
+          messageId: message?.id,
+          diceTypesSource,
+          cacheId,
+          diceImgsCount: allDiceImgs.length,
+          diceTypesLen: diceTypes.length,
+          rollAreas: rollAreas.length,
+          removed,
+          inserted,
+          deferred: true,
+        });
+      } catch (err) {
+        error("renderChatMessageHTML hook failed (Fate result line)", err);
       }
-
-      debug("Fate result line processed", {
-        messageId: message?.id,
-        diceTypesSource,
-        cacheId,
-        diceImgsCount: allDiceImgs.length,
-        diceTypesLen: diceTypes.length,
-        rollAreas: rollAreas.length,
-        removed,
-        inserted,
-      });
-    } catch (err) {
-      error("renderChatMessageHTML hook failed (Fate result line)", err);
-    }
+    });
   });
+}
+
+/**
+ * Defer execution to the microtask queue (runs after the current JS stack).
+ *
+ * @param {Function} fn
+ */
+function deferMicrotask(fn) {
+  try {
+    if (typeof queueMicrotask === "function") {
+      queueMicrotask(fn);
+      return;
+    }
+  } catch (_err) {
+    // ignore
+  }
+
+  Promise.resolve().then(fn).catch(() => void 0);
 }
 
 /**

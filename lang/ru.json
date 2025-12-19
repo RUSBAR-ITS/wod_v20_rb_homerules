@@ -29,7 +29,7 @@
         "chat": {
           "failure": "Неудача",
           "success": "Успех: {value}",
-          "botch": "Ботч: {value}"
+          "botch": "Провал: {value}"
         }
       }
     }
