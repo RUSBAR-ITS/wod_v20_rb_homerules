@@ -127,7 +127,6 @@ export function registerEvilBotchesChatHook() {
         hasMessageRoll: Boolean(message?.roll),
         hasMessageRolls: Array.isArray(message?.rolls) && message.rolls.length > 0,
         d10ValuesCount: allDieValues.length,
-        // Log as a string so that file logs remain readable (no collapsed "Object").
         d10ValuesJson: safeJsonStringify(allDieValues),
       });
 
@@ -144,6 +143,10 @@ export function registerEvilBotchesChatHook() {
       let ones = 0;
       let diceSuccesses = 0;
 
+      // Success counting, matching system behavior before subtracting ones:
+      // - 1s are counted separately and are NOT successes
+      // - 10s contribute according to system config (and specialization)
+      // - other dice >= difficulty => +1
       for (const value of allDieValues) {
         if (value === 1) {
           ones += 1;
@@ -163,37 +166,6 @@ export function registerEvilBotchesChatHook() {
       const successesBeforeOnes = diceSuccesses + (Number.isFinite(autoSuccesses) ? autoSuccesses : 0);
       const out = computeOutcome(successesBeforeOnes, ones, isWillpowerUsed);
 
-      debug("Evil Botches calc", {
-        messageId: message?.id ?? null,
-        rollTraceId: rollCtx?.rollTraceId ?? null,
-        difficulty,
-        isSpecialized,
-        isWillpowerUsed,
-        ones,
-        autoSuccesses,
-        successesFromDice: diceSuccesses,
-        successesBeforeSubtractOnes: successesBeforeOnes,
-        netBeforeWillpower: successesBeforeOnes - ones,
-        outcome: out,
-        diceCount: allDieValues.length,
-        // Log as a string so that file logs remain readable (no collapsed "Object").
-        dieValuesJson: safeJsonStringify(allDieValues),
-        tenValue: getTenSuccessValue(isSpecialized),
-        tenValueIfSpecialized: getTenSuccessValue(true),
-        tenValueIfNotSpecialized: getTenSuccessValue(false),
-        cfg: {
-          handleOnes: CONFIG?.worldofdarkness?.handleOnes === true,
-          usetenAddSuccess: CONFIG?.worldofdarkness?.usetenAddSuccess === true,
-          tenAddSuccess: CONFIG?.worldofdarkness?.tenAddSuccess,
-          usespecialityAddSuccess: CONFIG?.worldofdarkness?.usespecialityAddSuccess === true,
-          specialityAddSuccess: CONFIG?.worldofdarkness?.specialityAddSuccess,
-          specialityAllowBotch: CONFIG?.worldofdarkness?.specialityAllowBotch === true,
-          useOnesSoak: CONFIG?.worldofdarkness?.useOnesSoak === true,
-          useOnesDamage: CONFIG?.worldofdarkness?.useOnesDamage === true,
-        },
-        origin,
-      });
-
       let replaced = 0;
 
       for (let idx = 0; idx < rollAreas.length; idx += 1) {
@@ -212,6 +184,39 @@ export function registerEvilBotchesChatHook() {
           debug("Evil Botches: no direct divs found in success area", { messageId: message?.id });
           continue;
         }
+
+        debug("Evil Botches calc", {
+          messageId: message?.id ?? null,
+          rollTraceId: rollCtx?.rollTraceId ?? null,
+          areaIndex: idx,
+          difficulty,
+          isSpecialized,
+          isWillpowerUsed,
+          ones,
+          autoSuccesses,
+          successesFromDice: diceSuccesses,
+          successesBeforeSubtractOnes: successesBeforeOnes,
+          netBeforeWillpower: out.netBeforeWillpower,
+          netAfterWillpower: out.netAfterWillpower,
+          willpowerRuleApplied: out.willpowerRuleApplied,
+          outcome: out,
+          diceCount: allDieValues.length,
+          dieValuesJson: safeJsonStringify(allDieValues),
+          tenValue: getTenSuccessValue(isSpecialized),
+          tenValueIfSpecialized: getTenSuccessValue(true),
+          tenValueIfNotSpecialized: getTenSuccessValue(false),
+          cfg: {
+            handleOnes: CONFIG?.worldofdarkness?.handleOnes === true,
+            usetenAddSuccess: CONFIG?.worldofdarkness?.usetenAddSuccess === true,
+            tenAddSuccess: CONFIG?.worldofdarkness?.tenAddSuccess,
+            usespecialityAddSuccess: CONFIG?.worldofdarkness?.usespecialityAddSuccess === true,
+            specialityAddSuccess: CONFIG?.worldofdarkness?.specialityAddSuccess,
+            specialityAllowBotch: CONFIG?.worldofdarkness?.specialityAllowBotch === true,
+            useOnesSoak: CONFIG?.worldofdarkness?.useOnesSoak === true,
+            useOnesDamage: CONFIG?.worldofdarkness?.useOnesDamage === true,
+          },
+          origin,
+        });
 
         // Replace vanilla lines completely.
         // Keep "danger" styling for botch, and "success" styling for success (via existing classes).
@@ -284,21 +289,6 @@ function getTenSuccessValue(isSpecialized) {
 }
 
 /**
- * Safely stringify data for file logs.
- *
- * Foundry log files often collapse nested objects to "Object".
- * By converting important payloads to strings explicitly, we ensure
- * the diagnostics remain readable and actionable.
- */
-function safeJsonStringify(value) {
-  try {
-    return JSON.stringify(value);
-  } catch (_err) {
-    return "<unserializable>";
-  }
-}
-
-/**
  * Get Roll objects from a ChatMessage in a version-tolerant way.
  * - Foundry usually provides message.rolls (array).
  * - Some cases may still provide message.roll (single).
@@ -311,6 +301,21 @@ function getMessageRolls(message) {
     // ignore
   }
   return [];
+}
+
+/**
+ * Safely stringify data for file logs.
+ *
+ * Foundry log files often collapse nested objects to "Object".
+ * By converting important payloads to strings explicitly, we ensure
+ * the diagnostics remain readable and actionable.
+ */
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (_err) {
+    return "<unserializable>";
+  }
 }
 
 /**
@@ -400,25 +405,51 @@ function computeOutcome(successesBeforeOnes, ones, isWillpowerUsed) {
   const s = Number.isFinite(successesBeforeOnes) ? successesBeforeOnes : 0;
   const o = Number.isFinite(ones) ? ones : 0;
 
-  const net = s - o;
+  const netBeforeWillpower = s - o;
+  let netAfterWillpower = netBeforeWillpower;
+  let willpowerRuleApplied = "none";
 
-  if (net > 0) {
-    // Success. Willpower may convert failure to success in some cases, but our module respects
-    // the system-produced willpower usage flag; logic stays unchanged.
-    return { kind: "success", value: net };
+  // Home rule (module-specific):
+  // - If Willpower is used and net >= 1 => net += 1
+  // - If Willpower is used and net <= 0 => net = 1
+  // This rule is applied AFTER subtracting ones.
+  if (isWillpowerUsed === true) {
+    if (netAfterWillpower >= 1) {
+      netAfterWillpower += 1;
+      willpowerRuleApplied = "plus-1";
+    } else {
+      netAfterWillpower = 1;
+      willpowerRuleApplied = "set-to-1";
+    }
+  }
+
+  // Determine outcome based on the final net value.
+  // If Willpower is used, it guarantees a success with this home rule.
+  if (netAfterWillpower > 0) {
+    return {
+      kind: "success",
+      value: netAfterWillpower,
+      netBeforeWillpower,
+      netAfterWillpower,
+      willpowerRuleApplied,
+    };
   }
 
   if (o > s) {
-    // Botch count is ones - successes.
-    return { kind: "botch", value: o - s };
+    return {
+      kind: "botch",
+      value: o - s,
+      netBeforeWillpower,
+      netAfterWillpower,
+      willpowerRuleApplied,
+    };
   }
 
-  // Failure includes: (s === 0 && o === 0) and (s === o)
-  // Willpower is handled by the system logic earlier; we only reflect it.
-  if (isWillpowerUsed === true && s === 0 && o === 0) {
-    // Keep behavior unchanged: still failure here, willpower effects are system-side.
-    return { kind: "failure", value: 0 };
-  }
-
-  return { kind: "failure", value: 0 };
+  return {
+    kind: "failure",
+    value: 0,
+      netBeforeWillpower,
+      netAfterWillpower,
+      willpowerRuleApplied,
+  };
 }
