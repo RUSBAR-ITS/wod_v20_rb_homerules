@@ -60,9 +60,9 @@ export function registerEvilBotchesChatHook() {
         userId: message?.user?.id ?? null,
         speaker: message?.speaker ?? null,
         flagsHasRollContext: Boolean(rollCtx),
-        // Full context dump is intentionally debug-only.
-        rollCtx,
-        settingsSnapshot,
+        // Log as strings so that file logs remain readable (no collapsed "Object").
+        rollCtxJson: safeJsonStringify(rollCtx),
+        settingsSnapshotJson: safeJsonStringify(settingsSnapshot),
       });
 
       const difficulty = Number(rollCtx?.difficulty);
@@ -115,12 +115,83 @@ export function registerEvilBotchesChatHook() {
       // This is more reliable than parsing HTML or image attributes, and is locale-independent.
       const msgRolls = getMessageRolls(message);
 
+      // Variant A:
+      // The WoD system commonly stores a big dice pool as multiple Roll objects (often each Roll is 1d10).
+      // We treat ALL message rolls as a single pool and compute the outcome once.
+      const allDieValues = extractD10ValuesFromRolls(msgRolls);
+
       debug("Evil Botches: message rolls snapshot", {
         messageId: message?.id ?? null,
         rollTraceId: rollCtx?.rollTraceId ?? null,
         rollsCount: msgRolls.length,
         hasMessageRoll: Boolean(message?.roll),
         hasMessageRolls: Array.isArray(message?.rolls) && message.rolls.length > 0,
+        d10ValuesCount: allDieValues.length,
+        // Log as a string so that file logs remain readable (no collapsed "Object").
+        d10ValuesJson: safeJsonStringify(allDieValues),
+      });
+
+      if (allDieValues.length === 0) {
+        debug("Evil Botches: no d10 results found in message rolls; skipping", {
+          messageId: message?.id ?? null,
+          rollTraceId: rollCtx?.rollTraceId ?? null,
+          rollsCount: msgRolls.length,
+        });
+        return;
+      }
+
+      // Compute outcome once for the whole pool.
+      let ones = 0;
+      let diceSuccesses = 0;
+
+      for (const value of allDieValues) {
+        if (value === 1) {
+          ones += 1;
+          continue;
+        }
+
+        if (value === 10) {
+          diceSuccesses += getTenSuccessValue(isSpecialized);
+          continue;
+        }
+
+        if (value >= difficulty) {
+          diceSuccesses += 1;
+        }
+      }
+
+      const successesBeforeOnes = diceSuccesses + (Number.isFinite(autoSuccesses) ? autoSuccesses : 0);
+      const out = computeOutcome(successesBeforeOnes, ones, isWillpowerUsed);
+
+      debug("Evil Botches calc", {
+        messageId: message?.id ?? null,
+        rollTraceId: rollCtx?.rollTraceId ?? null,
+        difficulty,
+        isSpecialized,
+        isWillpowerUsed,
+        ones,
+        autoSuccesses,
+        successesFromDice: diceSuccesses,
+        successesBeforeSubtractOnes: successesBeforeOnes,
+        netBeforeWillpower: successesBeforeOnes - ones,
+        outcome: out,
+        diceCount: allDieValues.length,
+        // Log as a string so that file logs remain readable (no collapsed "Object").
+        dieValuesJson: safeJsonStringify(allDieValues),
+        tenValue: getTenSuccessValue(isSpecialized),
+        tenValueIfSpecialized: getTenSuccessValue(true),
+        tenValueIfNotSpecialized: getTenSuccessValue(false),
+        cfg: {
+          handleOnes: CONFIG?.worldofdarkness?.handleOnes === true,
+          usetenAddSuccess: CONFIG?.worldofdarkness?.usetenAddSuccess === true,
+          tenAddSuccess: CONFIG?.worldofdarkness?.tenAddSuccess,
+          usespecialityAddSuccess: CONFIG?.worldofdarkness?.usespecialityAddSuccess === true,
+          specialityAddSuccess: CONFIG?.worldofdarkness?.specialityAddSuccess,
+          specialityAllowBotch: CONFIG?.worldofdarkness?.specialityAllowBotch === true,
+          useOnesSoak: CONFIG?.worldofdarkness?.useOnesSoak === true,
+          useOnesDamage: CONFIG?.worldofdarkness?.useOnesDamage === true,
+        },
+        origin,
       });
 
       let replaced = 0;
@@ -141,85 +212,6 @@ export function registerEvilBotchesChatHook() {
           debug("Evil Botches: no direct divs found in success area", { messageId: message?.id });
           continue;
         }
-
-        const roll = pickRollForArea(msgRolls, idx);
-        if (!roll) {
-          debug("Evil Botches: no Roll object found for area; skipping", {
-            messageId: message?.id ?? null,
-            rollTraceId: rollCtx?.rollTraceId ?? null,
-            areaIndex: idx,
-            rollsCount: msgRolls.length,
-          });
-          continue;
-        }
-
-        const dieValues = extractD10ValuesFromRoll(roll);
-
-        if (dieValues.length === 0) {
-          debug("Evil Botches: no d10 results found in Roll; skipping area", {
-            messageId: message?.id ?? null,
-            rollTraceId: rollCtx?.rollTraceId ?? null,
-            areaIndex: idx,
-          });
-          continue;
-        }
-
-        let ones = 0;
-        let diceSuccesses = 0;
-
-        // Success counting, matching system behavior before subtracting ones:
-        // - 1s are counted separately and are NOT successes
-        // - 10s contribute according to system config (and specialization)
-        // - other dice >= difficulty => +1
-        for (const value of dieValues) {
-          if (value === 1) {
-            ones += 1;
-            continue;
-          }
-
-          if (value === 10) {
-            diceSuccesses += getTenSuccessValue(isSpecialized);
-            continue;
-          }
-
-          if (value >= difficulty) {
-            diceSuccesses += 1;
-          }
-        }
-
-        const successesBeforeOnes = diceSuccesses + (Number.isFinite(autoSuccesses) ? autoSuccesses : 0);
-        const out = computeOutcome(successesBeforeOnes, ones, isWillpowerUsed);
-
-        debug("Evil Botches calc", {
-          messageId: message?.id ?? null,
-          rollTraceId: rollCtx?.rollTraceId ?? null,
-          areaIndex: idx,
-          difficulty,
-          isSpecialized,
-          isWillpowerUsed,
-          ones,
-          autoSuccesses,
-          successesFromDice: diceSuccesses,
-          successesBeforeSubtractOnes: successesBeforeOnes,
-          netBeforeWillpower: successesBeforeOnes - ones,
-          outcome: out,
-          diceCount: dieValues.length,
-          dieValues,
-          tenValue: getTenSuccessValue(isSpecialized),
-          tenValueIfSpecialized: getTenSuccessValue(true),
-          tenValueIfNotSpecialized: getTenSuccessValue(false),
-          cfg: {
-            handleOnes: CONFIG?.worldofdarkness?.handleOnes === true,
-            usetenAddSuccess: CONFIG?.worldofdarkness?.usetenAddSuccess === true,
-            tenAddSuccess: CONFIG?.worldofdarkness?.tenAddSuccess,
-            usespecialityAddSuccess: CONFIG?.worldofdarkness?.usespecialityAddSuccess === true,
-            specialityAddSuccess: CONFIG?.worldofdarkness?.specialityAddSuccess,
-            specialityAllowBotch: CONFIG?.worldofdarkness?.specialityAllowBotch === true,
-            useOnesSoak: CONFIG?.worldofdarkness?.useOnesSoak === true,
-            useOnesDamage: CONFIG?.worldofdarkness?.useOnesDamage === true,
-          },
-          origin,
-        });
 
         // Replace vanilla lines completely.
         // Keep "danger" styling for botch, and "success" styling for success (via existing classes).
@@ -289,6 +281,21 @@ function getTenSuccessValue(isSpecialized) {
   }
 
   return 1;
+}
+
+/**
+ * Safely stringify data for file logs.
+ *
+ * Foundry log files often collapse nested objects to "Object".
+ * By converting important payloads to strings explicitly, we ensure
+ * the diagnostics remain readable and actionable.
+ */
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (_err) {
+    return "<unserializable>";
+  }
 }
 
 /**
@@ -368,6 +375,25 @@ function extractD10ValuesFromRoll(roll) {
   }
 
   return values;
+}
+
+/**
+ * Extract d10 results from ALL Roll objects of a ChatMessage.
+ *
+ * In the WoD system, a dice pool may be represented as multiple Roll objects
+ * (often each Roll is a single 1d10). We aggregate them into one pool.
+ */
+function extractD10ValuesFromRolls(rolls) {
+  const out = [];
+
+  if (!Array.isArray(rolls) || rolls.length === 0) return out;
+
+  for (const r of rolls) {
+    const vals = extractD10ValuesFromRoll(r);
+    if (vals.length > 0) out.push(...vals);
+  }
+
+  return out;
 }
 
 function computeOutcome(successesBeforeOnes, ones, isWillpowerUsed) {
