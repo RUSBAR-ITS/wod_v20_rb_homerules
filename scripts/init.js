@@ -20,6 +20,10 @@ import { registerInsertFateResultInChatHook } from "./fate/insert-fate-result-in
 import { registerEvilBotchesChatHook } from "./evil-botches/evil-botches-in-chat.js";
 import { registerFateDiceSoNiceColorsetHook } from "./fate/dice/register-dsn-fate-colorset.js";
 
+import { registerRollDialogRollContextPatches } from "./roll-context/patch-roll-dialogs-roll-context.js";
+import { registerBonusHelperAutoSuccessCapture } from "./roll-context/patch-bonus-helper-auto-success.js";
+import { registerRollContextChatAttachmentHook } from "./roll-context/attach-roll-context-to-chat.js";
+
 import { injectBloodpoolExtras } from "./vampire/bloodpool/inject-bloodpool-extras.js";
 import { enforceBloodpoolMaxPerRow } from "./vampire/bloodpool/enforce-bloodpool-max-per-row.js";
 
@@ -60,6 +64,19 @@ Hooks.once("init", () => {
   // These patches require dynamic imports; we log errors but do not hard-fail init.
   registerDiceContainerFatePatch().catch((err) => error("Failed to patch DiceRollContainer for Fate", err));
   registerRollDialogFatePatches().catch((err) => error("Failed to patch roll dialogs for Fate", err));
+
+  /**
+   * Roll context capture:
+   * - Patch upstream roll dialogs to cache per-roll flags (speciality / willpower / origin / difficulty).
+   * - Patch BonusHelper to capture attribute_auto_buff auto-successes inside DiceRoller.
+   * - Attach captured context to the next ChatMessage via preCreateChatMessage.
+   *
+   * This enables chat-only rules (evil botches) to use reliable structured data
+   * rather than parsing localized chat output.
+   */
+  registerBonusHelperAutoSuccessCapture().catch((err) => error("Failed to patch BonusHelper for auto-success capture", err));
+  registerRollDialogRollContextPatches().catch((err) => error("Failed to patch roll dialogs for roll context", err));
+  registerRollContextChatAttachmentHook();
 
   /**
    * Tag dice types (base/special/fate) for Fate-enabled rolls in ChatMessage.flags.

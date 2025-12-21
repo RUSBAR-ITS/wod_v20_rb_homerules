@@ -37,18 +37,25 @@ export function registerEvilBotchesChatHook() {
       const root = html?.[0] ?? html;
       if (!(root instanceof HTMLElement)) return;
 
-      const diff = extractDifficultyFromChatCard(root);
+      const rollCtx = message?.flags?.[MODULE_ID]?.rollContext ?? null;
+
+      // Prefer structured flags (our patches). Fallback to chat parsing for legacy messages.
+      const diff = rollCtx?.difficulty
+        ? { difficulty: Number(rollCtx.difficulty), reason: "flags" }
+        : extractDifficultyFromChatCard(root);
+
       if (!Number.isFinite(diff.difficulty) || diff.difficulty <= 0) {
         debug("Evil Botches: difficulty not found, skipping message", {
           messageId: message?.id,
           reason: diff.reason,
           extractedLabel: diff.label,
           infoLines: diff.infoLines,
+          hasRollContext: Boolean(rollCtx),
         });
         return;
       }
 
-      const difficulty = diff.difficulty;
+      const difficulty = Number(diff.difficulty);
 
       const rollAreas = Array.from(root.querySelectorAll(".tray-roll-area"));
       if (rollAreas.length === 0) {
@@ -59,8 +66,10 @@ export function registerEvilBotchesChatHook() {
       // NOTE:
       // The system template places `.tray-info-area` once per message, *outside* any `.tray-roll-area`.
       // So specialization/willpower flags must be detected on the whole card (`root`), not per roll-area.
-      const isSpecialized = detectSpecializationInChatCard(root);
-      const isWillpowerUsed = detectWillpowerInChatCard(root);
+      const isSpecialized = rollCtx ? rollCtx.isSpecialized === true : detectSpecializationInChatCard(root);
+      const isWillpowerUsed = rollCtx ? rollCtx.useWillpower === true : detectWillpowerInChatCard(root);
+      const origin = rollCtx?.origin ?? null;
+      const autoSuccesses = Number.parseInt(rollCtx?.autoSuccesses ?? 0, 10) || 0;
 
       let replaced = 0;
 
@@ -86,7 +95,7 @@ export function registerEvilBotchesChatHook() {
         }
 
         let ones = 0;
-        let successes = 0;
+        let diceSuccesses = 0;
 
         // Success counting, matching system behavior before subtracting ones:
         // - 1s are counted separately and are NOT successes
@@ -101,17 +110,26 @@ export function registerEvilBotchesChatHook() {
           }
 
           if (value === 10) {
-            successes += getTenSuccessValue(isSpecialized);
+            diceSuccesses += getTenSuccessValue(isSpecialized);
             continue;
           }
 
           if (value >= difficulty) {
-            successes += 1;
+            diceSuccesses += 1;
           }
         }
 
-        // Decide output per requirements (+ willpower rule).
-        const out = buildOutcome(successes, ones, isWillpowerUsed);
+        // Total successes before subtracting ones must include auto-successes.
+        const successesBeforeOnes = diceSuccesses + Math.max(0, autoSuccesses);
+
+        // Decide output per system rules (+ module willpower homerule).
+        const out = buildOutcomeWithRules({
+          successesBeforeOnes,
+          ones,
+          origin,
+          isSpecialized,
+          isWillpowerUsed,
+        });
 
         // Replace vanilla lines completely.
         // Keep "danger" styling for botch, and "success" styling for success (via existing classes).
@@ -145,8 +163,10 @@ export function registerEvilBotchesChatHook() {
           isSpecialized,
           isWillpowerUsed,
           ones,
-          successesBeforeSubtractOnes: successes,
-          netBeforeWillpower: successes - ones,
+          autoSuccesses,
+          successesFromDice: diceSuccesses,
+          successesBeforeSubtractOnes: successesBeforeOnes,
+          netBeforeWillpower: successesBeforeOnes - ones,
           outcome: out,
           diceCount: diceImgs.length,
           tenValue: getTenSuccessValue(isSpecialized),
@@ -156,7 +176,12 @@ export function registerEvilBotchesChatHook() {
             tenAddSuccess: CONFIG?.worldofdarkness?.tenAddSuccess,
             usespecialityAddSuccess: CONFIG?.worldofdarkness?.usespecialityAddSuccess === true,
             specialityAddSuccess: CONFIG?.worldofdarkness?.specialityAddSuccess,
+            specialityAllowBotch: CONFIG?.worldofdarkness?.specialityAllowBotch === true,
+            useOnesSoak: CONFIG?.worldofdarkness?.useOnesSoak === true,
+            useOnesDamage: CONFIG?.worldofdarkness?.useOnesDamage === true,
           },
+          ctxSource: rollCtx ? "flags" : "chat-parse",
+          origin,
         });
       }
 
@@ -289,30 +314,45 @@ function detectWillpowerInChatCard(root) {
   }
 }
 
-function buildOutcome(successes, ones, isWillpowerUsed) {
-  // Apply homerule for Willpower:
+function buildOutcomeWithRules({ successesBeforeOnes, ones, origin, isSpecialized, isWillpowerUsed }) {
+  const cfg = CONFIG?.worldofdarkness ?? {};
+
+  // Determine whether this roll can botch according to system settings.
+  // This mirrors the checks in DiceRoller.
+  let canBotch = true;
+  if (origin === "soak" && cfg.useOnesSoak !== true) canBotch = false;
+  if (origin === "damage" && cfg.useOnesDamage !== true) canBotch = false;
+
+  // Specialization rule: some tables disallow botches on specialized rolls.
+  // The system honors this via CONFIG.worldofdarkness.specialityAllowBotch.
+  const specialityAllowBotch = cfg.specialityAllowBotch === true;
+  if (isSpecialized === true && specialityAllowBotch !== true) {
+    canBotch = false;
+  }
+
+  // Apply homerule for Willpower (module-defined):
   // - if net > 0 => net + 1
   // - else => 1
+  // IMPORTANT: we intentionally ignore the system's built-in willpower +1 success here.
   if (isWillpowerUsed === true) {
-    const net = successes - ones;
+    const net = successesBeforeOnes - ones;
     if (net > 0) return { kind: "success", value: net + 1 };
     return { kind: "success", value: 1 };
   }
 
-  // Vanilla "evil botches" outcome.
-  if (successes === 0 && ones === 0) {
-    return { kind: "failure", value: 0 };
-  }
+  // Evil botches outcome (chat-only):
+  // - if net > 0 => success: net
+  // - if net === 0 => failure
+  // - if net < 0 => botch: -net (only when botches are allowed)
+  const net = successesBeforeOnes - ones;
 
-  if (successes === ones) {
-    return { kind: "failure", value: 0 };
-  }
+  if (successesBeforeOnes === 0 && ones === 0) return { kind: "failure", value: 0 };
+  if (net === 0) return { kind: "failure", value: 0 };
+  if (net > 0) return { kind: "success", value: net };
 
-  if (successes > ones) {
-    return { kind: "success", value: successes - ones };
-  }
-
-  return { kind: "botch", value: ones - successes };
+  // net < 0
+  if (canBotch !== true) return { kind: "failure", value: 0 };
+  return { kind: "botch", value: Math.abs(net) };
 }
 
 function extractDifficultyFromChatCard(root) {

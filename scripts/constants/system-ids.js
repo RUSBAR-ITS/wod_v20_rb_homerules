@@ -28,6 +28,12 @@ export const SYSTEM_IDS = Object.freeze({
   ROLL_DICE_MODULE_PATH: "/systems/worldofdarkness/module/scripts/roll-dice.js",
 
   /**
+   * Absolute module path to the upstream bonus helper.
+   * Used for capturing auto-successes (attribute_auto_buff).
+   */
+  BONUS_HELPER_MODULE_PATH: "/systems/worldofdarkness/module/scripts/bonus-helpers.js",
+
+  /**
    * Absolute module paths to upstream roll dialogs we patch.
    */
   DIALOG_SOAK_MODULE_PATH: "/systems/worldofdarkness/module/dialogs/dialog-soak.js",
