@@ -36,16 +36,39 @@ export function registerRollContextChatAttachmentHook() {
         return;
       }
 
-      // Ensure flags container exists.
-      if (!data.flags) data.flags = {};
-      if (!data.flags[MODULE_ID]) data.flags[MODULE_ID] = {};
+      /**
+       * Foundry v13 note:
+       * Mutating the `data` argument in preCreateChatMessage is not reliable.
+       * Persist changes using `doc.updateSource(...)` (same pattern as our Fate dice tagging).
+       */
+      const existingFlags = (data?.flags && typeof data.flags === "object") ? data.flags : {};
+      const existingModuleFlags =
+        (existingFlags[MODULE_ID] && typeof existingFlags[MODULE_ID] === "object")
+          ? existingFlags[MODULE_ID]
+          : {};
 
-      data.flags[MODULE_ID].rollContext = ctx;
+      const patchedFlags = foundry.utils.mergeObject(
+        foundry.utils.deepClone(existingFlags),
+        {
+          [MODULE_ID]: {
+            ...existingModuleFlags,
+            rollContext: ctx,
+            rollContextVersion: 1,
+          },
+        },
+        { inplace: false }
+      );
+
+      // Persist into the creating document source.
+      doc.updateSource({
+        flags: patchedFlags,
+      });
 
       debug("Attached roll context to ChatMessage", {
         userId: uid,
         messageId: doc?.id ?? null,
         flagsPath: `flags.${MODULE_ID}.rollContext`,
+        persistedVia: "doc.updateSource",
         // Flatten the most important values so they show up in the console.
         rollTraceId: ctx.rollTraceId ?? null,
         actorId: ctx.actorId ?? null,

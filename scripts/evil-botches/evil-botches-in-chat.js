@@ -29,6 +29,18 @@ export function registerEvilBotchesChatHook() {
 
       const rollCtx = message?.flags?.[MODULE_ID]?.rollContext ?? null;
 
+      // IMPORTANT:
+      // We do NOT parse difficulty/specialization/willpower from the rendered chat card.
+      // We rely exclusively on our structured roll context attached in preCreateChatMessage.
+      if (!rollCtx) {
+        debug("Evil Botches: no rollContext on message; skipping", {
+          messageId: message?.id ?? null,
+          userId: message?.user?.id ?? null,
+          speaker: message?.speaker ?? null,
+        });
+        return;
+      }
+
       // --- DIAGNOSTICS: log incoming message + settings + context snapshot ---
       const settingsSnapshot = {
         moduleEnabled: isEvilBotchesEnabled(),
@@ -48,31 +60,22 @@ export function registerEvilBotchesChatHook() {
         userId: message?.user?.id ?? null,
         speaker: message?.speaker ?? null,
         flagsHasRollContext: Boolean(rollCtx),
+        // Full context dump is intentionally debug-only.
         rollCtx,
         settingsSnapshot,
       });
 
-      // Prefer structured flags (our patches). Fallback to chat parsing for legacy messages.
-      const diff = rollCtx?.difficulty
-        ? { difficulty: Number(rollCtx.difficulty), reason: "flags" }
-        : extractDifficultyFromChatCard(root);
+      const difficulty = Number(rollCtx?.difficulty);
 
-      debug("Evil Botches: difficulty resolved", {
-        messageId: message?.id ?? null,
-        rollTraceId: rollCtx?.rollTraceId ?? null,
-        diff,
-      });
-
-      if (!Number.isFinite(diff?.difficulty)) {
-        debug("Evil Botches: difficulty missing; skipping", {
-          messageId: message?.id,
-          difficultyReason: diff?.reason,
-          hasRollContext: Boolean(rollCtx),
+      if (!Number.isFinite(difficulty)) {
+        debug("Evil Botches: rollContext.difficulty missing/invalid; skipping", {
+          messageId: message?.id ?? null,
+          rollTraceId: rollCtx?.rollTraceId ?? null,
+          difficultyRaw: rollCtx?.difficulty ?? null,
+          rollCtx,
         });
         return;
       }
-
-      const difficulty = Number(diff.difficulty);
 
       const rollAreas = Array.from(root.querySelectorAll(".tray-roll-area"));
       if (rollAreas.length === 0) {
@@ -80,13 +83,10 @@ export function registerEvilBotchesChatHook() {
         return;
       }
 
-      // NOTE:
-      // The system template places `.tray-info-area` once per message, *outside* any `.tray-roll-area`.
-      // So specialization/willpower flags must be detected on the whole card (`root`), not per roll-area.
       const origin = rollCtx?.origin ?? null;
 
-      const isSpecialized = rollCtx ? rollCtx.isSpecialized === true : detectSpecializationInChatCard(root);
-      const isWillpowerUsed = rollCtx ? rollCtx.useWillpower === true : detectWillpowerInChatCard(root);
+      const isSpecialized = rollCtx.isSpecialized === true;
+      const isWillpowerUsed = rollCtx.useWillpower === true;
 
       debug("Evil Botches: context inputs", {
         messageId: message?.id ?? null,
@@ -95,27 +95,39 @@ export function registerEvilBotchesChatHook() {
         isSpecialized,
         isWillpowerUsed,
         source: {
-          origin: rollCtx?.origin ? "flags" : "chat-detect",
-          isSpecialized: rollCtx ? "flags" : "chat-detect",
-          useWillpower: rollCtx ? "flags" : "chat-detect",
+          origin: "flags",
+          isSpecialized: "flags",
+          useWillpower: "flags",
         },
-        rawFlags: rollCtx
-          ? {
-              difficulty: rollCtx?.difficulty ?? null,
-              isSpecialized: rollCtx?.isSpecialized ?? null,
-              useWillpower: rollCtx?.useWillpower ?? null,
-              actorId: rollCtx?.actorId ?? null,
-              attribute: rollCtx?.attribute ?? null,
-              autoSuccesses: rollCtx?.autoSuccesses ?? null,
-            }
-          : null,
+        rawFlags: {
+          difficulty: rollCtx?.difficulty ?? null,
+          isSpecialized: rollCtx?.isSpecialized ?? null,
+          useWillpower: rollCtx?.useWillpower ?? null,
+          actorId: rollCtx?.actorId ?? null,
+          attribute: rollCtx?.attribute ?? null,
+          autoSuccesses: rollCtx?.autoSuccesses ?? null,
+        },
       });
 
       const autoSuccesses = rollCtx?.autoSuccesses ? Number(rollCtx.autoSuccesses) : 0;
 
+      // We read dice results from the Roll objects attached to the ChatMessage.
+      // This is more reliable than parsing HTML or image attributes, and is locale-independent.
+      const msgRolls = getMessageRolls(message);
+
+      debug("Evil Botches: message rolls snapshot", {
+        messageId: message?.id ?? null,
+        rollTraceId: rollCtx?.rollTraceId ?? null,
+        rollsCount: msgRolls.length,
+        hasMessageRoll: Boolean(message?.roll),
+        hasMessageRolls: Array.isArray(message?.rolls) && message.rolls.length > 0,
+      });
+
       let replaced = 0;
 
-      for (const area of rollAreas) {
+      for (let idx = 0; idx < rollAreas.length; idx += 1) {
+        const area = rollAreas[idx];
+
         const successArea = area.querySelector(".tray-success-area");
         if (!successArea) {
           debug("Evil Botches: roll area has no .tray-success-area, skipping", { messageId: message?.id });
@@ -130,24 +142,36 @@ export function registerEvilBotchesChatHook() {
           continue;
         }
 
-        const diceImgs = Array.from(area.querySelectorAll("img.wod-svg"));
-        if (diceImgs.length === 0) {
-          debug("Evil Botches: no dice images found in roll area", { messageId: message?.id });
+        const roll = pickRollForArea(msgRolls, idx);
+        if (!roll) {
+          debug("Evil Botches: no Roll object found for area; skipping", {
+            messageId: message?.id ?? null,
+            rollTraceId: rollCtx?.rollTraceId ?? null,
+            areaIndex: idx,
+            rollsCount: msgRolls.length,
+          });
+          continue;
+        }
+
+        const dieValues = extractD10ValuesFromRoll(roll);
+
+        if (dieValues.length === 0) {
+          debug("Evil Botches: no d10 results found in Roll; skipping area", {
+            messageId: message?.id ?? null,
+            rollTraceId: rollCtx?.rollTraceId ?? null,
+            areaIndex: idx,
+          });
           continue;
         }
 
         let ones = 0;
         let diceSuccesses = 0;
-        const dieValues = [];
 
         // Success counting, matching system behavior before subtracting ones:
         // - 1s are counted separately and are NOT successes
         // - 10s contribute according to system config (and specialization)
         // - other dice >= difficulty => +1
-        for (const img of diceImgs) {
-          const value = extractDieValueFromImg(img);
-          dieValues.push(value);
-
+        for (const value of dieValues) {
           if (value === 1) {
             ones += 1;
             continue;
@@ -169,6 +193,7 @@ export function registerEvilBotchesChatHook() {
         debug("Evil Botches calc", {
           messageId: message?.id ?? null,
           rollTraceId: rollCtx?.rollTraceId ?? null,
+          areaIndex: idx,
           difficulty,
           isSpecialized,
           isWillpowerUsed,
@@ -178,7 +203,7 @@ export function registerEvilBotchesChatHook() {
           successesBeforeSubtractOnes: successesBeforeOnes,
           netBeforeWillpower: successesBeforeOnes - ones,
           outcome: out,
-          diceCount: diceImgs.length,
+          diceCount: dieValues.length,
           dieValues,
           tenValue: getTenSuccessValue(isSpecialized),
           tenValueIfSpecialized: getTenSuccessValue(true),
@@ -193,7 +218,6 @@ export function registerEvilBotchesChatHook() {
             useOnesSoak: CONFIG?.worldofdarkness?.useOnesSoak === true,
             useOnesDamage: CONFIG?.worldofdarkness?.useOnesDamage === true,
           },
-          ctxSource: rollCtx ? "flags" : "chat-parse",
           origin,
         });
 
@@ -206,16 +230,16 @@ export function registerEvilBotchesChatHook() {
         if (out.kind === "botch") {
           const span = document.createElement("span");
           span.classList.add("danger");
-          span.textContent = game.i18n.format("wod_v20_rb_homerules.evilBotches.botch", { count: out.value });
+          span.textContent = game.i18n.format("rusbar.homerules.evilBotches.chat.botch", { value: out.value });
           line.appendChild(span);
         } else if (out.kind === "success") {
           const span = document.createElement("span");
           span.classList.add("success");
-          span.textContent = game.i18n.format("wod_v20_rb_homerules.evilBotches.success", { count: out.value });
+          span.textContent = game.i18n.format("rusbar.homerules.evilBotches.chat.success", { value: out.value });
           line.appendChild(span);
         } else {
           const span = document.createElement("span");
-          span.textContent = game.i18n.localize("wod_v20_rb_homerules.evilBotches.failure");
+          span.textContent = game.i18n.localize("rusbar.homerules.evilBotches.chat.failure");
           line.appendChild(span);
         }
 
@@ -230,7 +254,6 @@ export function registerEvilBotchesChatHook() {
           difficulty,
           rollAreas: rollAreas.length,
           replaced,
-          ctxSource: rollCtx ? "flags" : "chat-parse",
         });
       }
     } catch (err) {
@@ -245,36 +268,6 @@ function isEvilBotchesEnabled() {
 
 function isSystemSubtractOnesEnabled() {
   return CONFIG?.worldofdarkness?.handleOnes === true;
-}
-
-/**
- * Extract roll difficulty from the chat card.
- *
- * @param {HTMLElement} root
- * @returns {{ difficulty: number|null, reason: string }}
- */
-function extractDifficultyFromChatCard(root) {
-  try {
-    const text = root?.textContent ?? "";
-    const m = text.match(/Difficulty\\s*:\\s*(\\d+)/i) || text.match(/Сложность\\s*:\\s*(\\d+)/i);
-    if (!m) return { difficulty: null, reason: "no-match" };
-    const v = Number(m[1]);
-    return Number.isFinite(v) ? { difficulty: v, reason: "chat-parse" } : { difficulty: null, reason: "nan" };
-  } catch (_err) {
-    return { difficulty: null, reason: "exception" };
-  }
-}
-
-function detectSpecializationInChatCard(root) {
-  // Legacy detection: best-effort.
-  const t = root?.textContent ?? "";
-  return /special/i.test(t) || /специал/i.test(t);
-}
-
-function detectWillpowerInChatCard(root) {
-  // Legacy detection: best-effort.
-  const t = root?.textContent ?? "";
-  return /willpower/i.test(t) || /воля/i.test(t);
 }
 
 function getTenSuccessValue(isSpecialized) {
@@ -298,19 +291,83 @@ function getTenSuccessValue(isSpecialized) {
   return 1;
 }
 
-function extractDieValueFromImg(img) {
+/**
+ * Get Roll objects from a ChatMessage in a version-tolerant way.
+ * - Foundry usually provides message.rolls (array).
+ * - Some cases may still provide message.roll (single).
+ */
+function getMessageRolls(message) {
   try {
-    const alt = img?.getAttribute?.("alt") ?? "";
-    const m = alt.match(/\\b(10|[1-9])\\b/);
-    if (m) return Number(m[1]);
-
-    const src = img?.getAttribute?.("src") ?? "";
-    const m2 = src.match(/\\b(10|[1-9])\\b/);
-    if (m2) return Number(m2[1]);
+    if (Array.isArray(message?.rolls) && message.rolls.length > 0) return message.rolls;
+    if (message?.roll) return [message.roll];
   } catch (_err) {
     // ignore
   }
-  return NaN;
+  return [];
+}
+
+/**
+ * Pick a Roll for a specific visual roll area.
+ * If there are multiple rolls, we map by index, falling back to the first.
+ */
+function pickRollForArea(rolls, areaIndex) {
+  if (!Array.isArray(rolls) || rolls.length === 0) return null;
+  return rolls[areaIndex] ?? rolls[0] ?? null;
+}
+
+/**
+ * Extract d10 results from a Roll object.
+ *
+ * We intentionally do not rely on rendered HTML or image attributes.
+ * We prefer roll.dice (if present), otherwise we fall back to scanning roll.terms.
+ *
+ * Returns a list of integer results in [1..10].
+ */
+function extractD10ValuesFromRoll(roll) {
+  const values = [];
+
+  try {
+    // Preferred: roll.dice (array of DiceTerm)
+    const diceTerms = Array.isArray(roll?.dice) ? roll.dice : null;
+
+    if (diceTerms && diceTerms.length > 0) {
+      for (const term of diceTerms) {
+        const faces = Number(term?.faces);
+        if (faces !== 10) continue;
+
+        const results = Array.isArray(term?.results) ? term.results : [];
+        for (const r of results) {
+          const v = Number(r?.result);
+          if (Number.isFinite(v) && v >= 1 && v <= 10) values.push(v);
+        }
+      }
+      return values;
+    }
+
+    // Fallback: scan roll.terms recursively for DiceTerms with faces === 10
+    const stack = Array.isArray(roll?.terms) ? [...roll.terms] : [];
+
+    while (stack.length > 0) {
+      const t = stack.shift();
+
+      // Nested term containers (pools/groups) may expose .terms or .dice
+      if (t && Array.isArray(t.terms)) stack.push(...t.terms);
+      if (t && Array.isArray(t.dice)) stack.push(...t.dice);
+
+      const faces = Number(t?.faces);
+      if (faces !== 10) continue;
+
+      const results = Array.isArray(t?.results) ? t.results : [];
+      for (const r of results) {
+        const v = Number(r?.result);
+        if (Number.isFinite(v) && v >= 1 && v <= 10) values.push(v);
+      }
+    }
+  } catch (_err) {
+    // ignore
+  }
+
+  return values;
 }
 
 function computeOutcome(successesBeforeOnes, ones, isWillpowerUsed) {
