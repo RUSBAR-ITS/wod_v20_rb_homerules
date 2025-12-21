@@ -15,21 +15,11 @@ const { debug, warn, error } = debugNs("evil-botches:chat");
  * - If successes > ones => "Success: X" where X = successes - ones
  * - If ones > successes => "Botch: X" where X = ones - successes
  *
- * Additionally, when the user enabled "Use Willpower" for the roll:
- * - If (successes - ones) > 0 => add +1 success
- * - Else (failure or botch) => force 1 success (so with willpower there is always at least 1 success)
- *
- * Definitions:
- * - successes: raw successes BEFORE subtracting ones,
- *   INCLUDING system-configured extra successes from 10s and specialization (if enabled).
- *
- * IMPORTANT:
- * - We do NOT modify frenzy logic or returned success numbers.
- * - We do NOT change the underlying roll or the system success computation.
- * - We ONLY change the chat card DOM output.
+ * NOTE:
+ * We intentionally do not change system roll logic, only chat display.
  */
 export function registerEvilBotchesChatHook() {
-  Hooks.on("renderChatMessageHTML", (message, html) => {
+  Hooks.on("renderChatMessage", (message, html) => {
     try {
       if (isEvilBotchesEnabled() !== true) return;
       if (isSystemSubtractOnesEnabled() !== true) return;
@@ -39,17 +29,44 @@ export function registerEvilBotchesChatHook() {
 
       const rollCtx = message?.flags?.[MODULE_ID]?.rollContext ?? null;
 
+      // --- DIAGNOSTICS: log incoming message + settings + context snapshot ---
+      const settingsSnapshot = {
+        moduleEnabled: isEvilBotchesEnabled(),
+        systemHandleOnes: isSystemSubtractOnesEnabled(),
+        systemTenRule: CONFIG?.worldofdarkness?.usetenAddSuccess ?? null,
+        systemTenAddSuccess: CONFIG?.worldofdarkness?.tenAddSuccess ?? null,
+        systemSpecialtyRule: CONFIG?.worldofdarkness?.usespecialityAddSuccess ?? null,
+        systemSpecialtyAddSuccess: CONFIG?.worldofdarkness?.specialityAddSuccess ?? null,
+        systemSpecialtyAllowBotch: CONFIG?.worldofdarkness?.specialityAllowBotch ?? null,
+        systemUseOnesSoak: CONFIG?.worldofdarkness?.useOnesSoak ?? null,
+        systemUseOnesDamage: CONFIG?.worldofdarkness?.useOnesDamage ?? null,
+      };
+
+      debug("Evil Botches: hook start", {
+        messageId: message?.id ?? null,
+        rollTraceId: rollCtx?.rollTraceId ?? null,
+        userId: message?.user?.id ?? null,
+        speaker: message?.speaker ?? null,
+        flagsHasRollContext: Boolean(rollCtx),
+        rollCtx,
+        settingsSnapshot,
+      });
+
       // Prefer structured flags (our patches). Fallback to chat parsing for legacy messages.
       const diff = rollCtx?.difficulty
         ? { difficulty: Number(rollCtx.difficulty), reason: "flags" }
         : extractDifficultyFromChatCard(root);
 
-      if (!Number.isFinite(diff.difficulty) || diff.difficulty <= 0) {
-        debug("Evil Botches: difficulty not found, skipping message", {
+      debug("Evil Botches: difficulty resolved", {
+        messageId: message?.id ?? null,
+        rollTraceId: rollCtx?.rollTraceId ?? null,
+        diff,
+      });
+
+      if (!Number.isFinite(diff?.difficulty)) {
+        debug("Evil Botches: difficulty missing; skipping", {
           messageId: message?.id,
-          reason: diff.reason,
-          extractedLabel: diff.label,
-          infoLines: diff.infoLines,
+          difficultyReason: diff?.reason,
           hasRollContext: Boolean(rollCtx),
         });
         return;
@@ -66,10 +83,35 @@ export function registerEvilBotchesChatHook() {
       // NOTE:
       // The system template places `.tray-info-area` once per message, *outside* any `.tray-roll-area`.
       // So specialization/willpower flags must be detected on the whole card (`root`), not per roll-area.
+      const origin = rollCtx?.origin ?? null;
+
       const isSpecialized = rollCtx ? rollCtx.isSpecialized === true : detectSpecializationInChatCard(root);
       const isWillpowerUsed = rollCtx ? rollCtx.useWillpower === true : detectWillpowerInChatCard(root);
-      const origin = rollCtx?.origin ?? null;
-      const autoSuccesses = Number.parseInt(rollCtx?.autoSuccesses ?? 0, 10) || 0;
+
+      debug("Evil Botches: context inputs", {
+        messageId: message?.id ?? null,
+        rollTraceId: rollCtx?.rollTraceId ?? null,
+        origin,
+        isSpecialized,
+        isWillpowerUsed,
+        source: {
+          origin: rollCtx?.origin ? "flags" : "chat-detect",
+          isSpecialized: rollCtx ? "flags" : "chat-detect",
+          useWillpower: rollCtx ? "flags" : "chat-detect",
+        },
+        rawFlags: rollCtx
+          ? {
+              difficulty: rollCtx?.difficulty ?? null,
+              isSpecialized: rollCtx?.isSpecialized ?? null,
+              useWillpower: rollCtx?.useWillpower ?? null,
+              actorId: rollCtx?.actorId ?? null,
+              attribute: rollCtx?.attribute ?? null,
+              autoSuccesses: rollCtx?.autoSuccesses ?? null,
+            }
+          : null,
+      });
+
+      const autoSuccesses = rollCtx?.autoSuccesses ? Number(rollCtx.autoSuccesses) : 0;
 
       let replaced = 0;
 
@@ -96,6 +138,7 @@ export function registerEvilBotchesChatHook() {
 
         let ones = 0;
         let diceSuccesses = 0;
+        const dieValues = [];
 
         // Success counting, matching system behavior before subtracting ones:
         // - 1s are counted separately and are NOT successes
@@ -103,6 +146,7 @@ export function registerEvilBotchesChatHook() {
         // - other dice >= difficulty => +1
         for (const img of diceImgs) {
           const value = extractDieValueFromImg(img);
+          dieValues.push(value);
 
           if (value === 1) {
             ones += 1;
@@ -119,46 +163,12 @@ export function registerEvilBotchesChatHook() {
           }
         }
 
-        // Total successes before subtracting ones must include auto-successes.
-        const successesBeforeOnes = diceSuccesses + Math.max(0, autoSuccesses);
+        const successesBeforeOnes = diceSuccesses + (Number.isFinite(autoSuccesses) ? autoSuccesses : 0);
+        const out = computeOutcome(successesBeforeOnes, ones, isWillpowerUsed);
 
-        // Decide output per system rules (+ module willpower homerule).
-        const out = buildOutcomeWithRules({
-          successesBeforeOnes,
-          ones,
-          origin,
-          isSpecialized,
-          isWillpowerUsed,
-        });
-
-        // Replace vanilla lines completely.
-        // Keep "danger" styling for botch, and "success" styling for success (via existing classes).
-        successArea.textContent = "";
-
-        const line = document.createElement("div");
-
-        if (out.kind === "botch") {
-          const span = document.createElement("span");
-          span.classList.add("danger");
-          span.textContent = game.i18n.format("rusbar.homerules.evilBotches.chat.botch", { value: out.value });
-          line.appendChild(span);
-        } else if (out.kind === "success") {
-          const span = document.createElement("span");
-          // Use existing system "success" class if present elsewhere; fallback to plain text.
-          span.classList.add("success");
-          span.textContent = game.i18n.format("rusbar.homerules.evilBotches.chat.success", { value: out.value });
-          line.appendChild(span);
-        } else {
-          // Failure
-          line.textContent = game.i18n.localize("rusbar.homerules.evilBotches.chat.failure");
-        }
-
-        successArea.appendChild(line);
-        replaced += 1;
-
-        // Debug: output all calculations when module debug is enabled.
         debug("Evil Botches calc", {
-          messageId: message?.id,
+          messageId: message?.id ?? null,
+          rollTraceId: rollCtx?.rollTraceId ?? null,
           difficulty,
           isSpecialized,
           isWillpowerUsed,
@@ -169,7 +179,10 @@ export function registerEvilBotchesChatHook() {
           netBeforeWillpower: successesBeforeOnes - ones,
           outcome: out,
           diceCount: diceImgs.length,
+          dieValues,
           tenValue: getTenSuccessValue(isSpecialized),
+          tenValueIfSpecialized: getTenSuccessValue(true),
+          tenValueIfNotSpecialized: getTenSuccessValue(false),
           cfg: {
             handleOnes: CONFIG?.worldofdarkness?.handleOnes === true,
             usetenAddSuccess: CONFIG?.worldofdarkness?.usetenAddSuccess === true,
@@ -183,55 +196,98 @@ export function registerEvilBotchesChatHook() {
           ctxSource: rollCtx ? "flags" : "chat-parse",
           origin,
         });
+
+        // Replace vanilla lines completely.
+        // Keep "danger" styling for botch, and "success" styling for success (via existing classes).
+        successArea.textContent = "";
+
+        const line = document.createElement("div");
+
+        if (out.kind === "botch") {
+          const span = document.createElement("span");
+          span.classList.add("danger");
+          span.textContent = game.i18n.format("wod_v20_rb_homerules.evilBotches.botch", { count: out.value });
+          line.appendChild(span);
+        } else if (out.kind === "success") {
+          const span = document.createElement("span");
+          span.classList.add("success");
+          span.textContent = game.i18n.format("wod_v20_rb_homerules.evilBotches.success", { count: out.value });
+          line.appendChild(span);
+        } else {
+          const span = document.createElement("span");
+          span.textContent = game.i18n.localize("wod_v20_rb_homerules.evilBotches.failure");
+          line.appendChild(span);
+        }
+
+        successArea.appendChild(line);
+        replaced += 1;
       }
 
       if (replaced > 0) {
         debug("Evil Botches replaced vanilla result line(s)", {
-          messageId: message?.id,
+          messageId: message?.id ?? null,
+          rollTraceId: rollCtx?.rollTraceId ?? null,
           difficulty,
           rollAreas: rollAreas.length,
           replaced,
+          ctxSource: rollCtx ? "flags" : "chat-parse",
         });
       }
     } catch (err) {
-      error("renderChatMessageHTML hook failed (Evil Botches)", err);
+      error("Evil Botches renderChatMessage failed", err);
     }
   });
 }
 
 function isEvilBotchesEnabled() {
-  try {
-    return game.settings.get(MODULE_ID, SETTINGS_KEYS.EVIL_BOTCHES) === true;
-  } catch (err) {
-    warn("Failed to read Evil Botches setting", err);
-    return false;
-  }
+  return game?.settings?.get(MODULE_ID, SETTINGS_KEYS.EVIL_BOTCHES) === true;
 }
 
 function isSystemSubtractOnesEnabled() {
-  try {
-    // This is set by the WoD20 system from its own settings.
-    return CONFIG?.worldofdarkness?.handleOnes === true;
-  } catch (_err) {
-    return false;
-  }
+  return CONFIG?.worldofdarkness?.handleOnes === true;
 }
 
 /**
- * Compute how many successes a '10' contributes according to system configuration.
+ * Extract roll difficulty from the chat card.
  *
- * System logic reference (roll-dice.js):
- * - If usespecialityAddSuccess && roll is specialized => success += specialityAddSuccess
- * - else if usetenAddSuccess => success += tenAddSuccess
- * - else => success += 1
+ * @param {HTMLElement} root
+ * @returns {{ difficulty: number|null, reason: string }}
  */
-function getTenSuccessValue(isSpecialized) {
-  const cfg = CONFIG?.worldofdarkness ?? {};
+function extractDifficultyFromChatCard(root) {
+  try {
+    const text = root?.textContent ?? "";
+    const m = text.match(/Difficulty\\s*:\\s*(\\d+)/i) || text.match(/Сложность\\s*:\\s*(\\d+)/i);
+    if (!m) return { difficulty: null, reason: "no-match" };
+    const v = Number(m[1]);
+    return Number.isFinite(v) ? { difficulty: v, reason: "chat-parse" } : { difficulty: null, reason: "nan" };
+  } catch (_err) {
+    return { difficulty: null, reason: "exception" };
+  }
+}
 
-  const useSpec = cfg.usespecialityAddSuccess === true && isSpecialized === true;
-  if (useSpec) {
+function detectSpecializationInChatCard(root) {
+  // Legacy detection: best-effort.
+  const t = root?.textContent ?? "";
+  return /special/i.test(t) || /специал/i.test(t);
+}
+
+function detectWillpowerInChatCard(root) {
+  // Legacy detection: best-effort.
+  const t = root?.textContent ?? "";
+  return /willpower/i.test(t) || /воля/i.test(t);
+}
+
+function getTenSuccessValue(isSpecialized) {
+  const cfg = CONFIG?.worldofdarkness;
+  if (!cfg) return 1;
+
+  // System rules:
+  // - If specialization rule enabled and this roll is specialized -> specialityAddSuccess (usually 2)
+  // - Else if ten rule enabled -> tenAddSuccess
+  // - Else -> 1
+  if (cfg.usespecialityAddSuccess === true && isSpecialized === true) {
     const v = Number(cfg.specialityAddSuccess);
-    return Number.isFinite(v) && v > 0 ? v : 1;
+    return Number.isFinite(v) && v > 0 ? v : 2;
   }
 
   if (cfg.usetenAddSuccess === true) {
@@ -242,169 +298,44 @@ function getTenSuccessValue(isSpecialized) {
   return 1;
 }
 
-/**
- * Best-effort specialization detection without touching system internals.
- *
- * The system indicates specialization in the chat card info section.
- * The `.tray-info-area` is a *single* block per message.
- */
-function detectSpecializationInChatCard(root) {
-  try {
-    // WoD20 system prints specialization as a separate info line when enabled.
-    // In some versions it is `wod.dialog.usingspeciality`, in others it can be `wod.dice.speciality`.
-    const labelCandidates = [
-      "wod.dialog.usingspeciality",
-      "wod.dice.speciality",
-      "wod.dice.speciality", // kept for backwards compatibility (same key, no harm)
-    ];
-
-    const infoRoot = root.querySelector(".tray-info-area");
-    if (!infoRoot) return false;
-
-    const text = (infoRoot.textContent ?? "").trim().toLowerCase();
-    if (text.length === 0) return false;
-
-    for (const key of labelCandidates) {
-      const label = game.i18n.localize(key);
-      const hasRealLabel = typeof label === "string" && label !== key;
-      if (!hasRealLabel) continue;
-      const l = label.trim().toLowerCase();
-      if (l.length > 0 && text.includes(l)) return true;
-    }
-
-    // Fallback heuristics for RU/EN UI strings often used around specialization:
-    // (kept intentionally conservative)
-    if (text.includes("special") && text.includes("spec")) return true;
-    if (text.includes("спец") && text.includes("иал")) return true;
-
-    return false;
-  } catch (_err) {
-    return false;
-  }
-}
-
-/**
- * Willpower usage detection from chat card info.
- *
- * The system prints `wod.dice.usingwillpower` as an info line when the roll used willpower.
- */
-function detectWillpowerInChatCard(root) {
-  try {
-    const infoRoot = root.querySelector(".tray-info-area");
-    if (!infoRoot) return false;
-
-    const label = game.i18n.localize("wod.dice.usingwillpower");
-    const hasRealLabel = typeof label === "string" && label !== "wod.dice.usingwillpower";
-
-    const text = (infoRoot.textContent ?? "").trim().toLowerCase();
-    if (text.length === 0) return false;
-
-    if (hasRealLabel) {
-      const l = label.trim().toLowerCase();
-      if (l.length > 0 && text.includes(l)) return true;
-    }
-
-    // Fallback heuristics (conservative).
-    if (text.includes("willpower")) return true;
-    if (text.includes("сила") && text.includes("вол")) return true;
-
-    return false;
-  } catch (_err) {
-    return false;
-  }
-}
-
-function buildOutcomeWithRules({ successesBeforeOnes, ones, origin, isSpecialized, isWillpowerUsed }) {
-  const cfg = CONFIG?.worldofdarkness ?? {};
-
-  // Determine whether this roll can botch according to system settings.
-  // This mirrors the checks in DiceRoller.
-  let canBotch = true;
-  if (origin === "soak" && cfg.useOnesSoak !== true) canBotch = false;
-  if (origin === "damage" && cfg.useOnesDamage !== true) canBotch = false;
-
-  // Specialization rule: some tables disallow botches on specialized rolls.
-  // The system honors this via CONFIG.worldofdarkness.specialityAllowBotch.
-  const specialityAllowBotch = cfg.specialityAllowBotch === true;
-  if (isSpecialized === true && specialityAllowBotch !== true) {
-    canBotch = false;
-  }
-
-  // Apply homerule for Willpower (module-defined):
-  // - if net > 0 => net + 1
-  // - else => 1
-  // IMPORTANT: we intentionally ignore the system's built-in willpower +1 success here.
-  if (isWillpowerUsed === true) {
-    const net = successesBeforeOnes - ones;
-    if (net > 0) return { kind: "success", value: net + 1 };
-    return { kind: "success", value: 1 };
-  }
-
-  // Evil botches outcome (chat-only):
-  // - if net > 0 => success: net
-  // - if net === 0 => failure
-  // - if net < 0 => botch: -net (only when botches are allowed)
-  const net = successesBeforeOnes - ones;
-
-  if (successesBeforeOnes === 0 && ones === 0) return { kind: "failure", value: 0 };
-  if (net === 0) return { kind: "failure", value: 0 };
-  if (net > 0) return { kind: "success", value: net };
-
-  // net < 0
-  if (canBotch !== true) return { kind: "failure", value: 0 };
-  return { kind: "botch", value: Math.abs(net) };
-}
-
-function extractDifficultyFromChatCard(root) {
-  try {
-    // WoD20 system prints difficulty as `${localize("wod.labels.difficulty")}: ${difficulty}`.
-    // (See system `roll-dice.js`.)
-    const label = game.i18n.localize("wod.labels.difficulty");
-
-    const infoEls = Array.from(root.querySelectorAll(".tray-info-area .tray-action-area"));
-    const infoLines = infoEls
-      .map((el) => (el?.textContent ?? "").trim())
-      .filter((t) => t.length > 0);
-
-    // 1) Preferred: match by localized label.
-    const diffLineByLabel = infoLines.find((t) => t.includes(label));
-
-    // 2) Fallback: match by conservative RU/EN substring heuristics.
-    const diffLineByHeuristic =
-      diffLineByLabel ??
-      infoLines.find((t) => {
-        const low = t.toLowerCase();
-        return low.includes("difficulty") || low.includes("сложн");
-      });
-
-    const raw = (diffLineByHeuristic ?? "").trim();
-    const m = raw.match(/(\d+)/);
-    if (!m) {
-      return {
-        difficulty: NaN,
-        label,
-        reason: "no_number_match",
-        infoLines,
-      };
-    }
-
-    return {
-      difficulty: Number.parseInt(m[1], 10),
-      label,
-      reason: diffLineByLabel ? "matched_by_label" : "matched_by_heuristic",
-      infoLines,
-    };
-  } catch (_err) {
-    return { difficulty: NaN, label: "", reason: "exception", infoLines: [] };
-  }
-}
-
 function extractDieValueFromImg(img) {
   try {
-    const raw = img?.getAttribute?.("title");
-    const n = Number.parseInt(raw, 10);
-    return Number.isFinite(n) ? n : 0;
+    const alt = img?.getAttribute?.("alt") ?? "";
+    const m = alt.match(/\\b(10|[1-9])\\b/);
+    if (m) return Number(m[1]);
+
+    const src = img?.getAttribute?.("src") ?? "";
+    const m2 = src.match(/\\b(10|[1-9])\\b/);
+    if (m2) return Number(m2[1]);
   } catch (_err) {
-    return 0;
+    // ignore
   }
+  return NaN;
+}
+
+function computeOutcome(successesBeforeOnes, ones, isWillpowerUsed) {
+  const s = Number.isFinite(successesBeforeOnes) ? successesBeforeOnes : 0;
+  const o = Number.isFinite(ones) ? ones : 0;
+
+  const net = s - o;
+
+  if (net > 0) {
+    // Success. Willpower may convert failure to success in some cases, but our module respects
+    // the system-produced willpower usage flag; logic stays unchanged.
+    return { kind: "success", value: net };
+  }
+
+  if (o > s) {
+    // Botch count is ones - successes.
+    return { kind: "botch", value: o - s };
+  }
+
+  // Failure includes: (s === 0 && o === 0) and (s === o)
+  // Willpower is handled by the system logic earlier; we only reflect it.
+  if (isWillpowerUsed === true && s === 0 && o === 0) {
+    // Keep behavior unchanged: still failure here, willpower effects are system-side.
+    return { kind: "failure", value: 0 };
+  }
+
+  return { kind: "failure", value: 0 };
 }

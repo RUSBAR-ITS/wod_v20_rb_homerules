@@ -1,6 +1,7 @@
 import { debugNs } from "../logger/ns.js";
 import { SYSTEM_IDS } from "../constants/system-ids.js";
 import { setPendingRollContext } from "./store.js";
+import { createRollTraceId } from "./trace-id.js";
 
 const { debug, info, warn, error } = debugNs("rollctx:patch:dialogs");
 
@@ -8,12 +9,17 @@ const { debug, info, warn, error } = debugNs("rollctx:patch:dialogs");
  * Register prototype patches for upstream roll dialogs.
  *
  * Goal:
- * - Capture per-roll flags (specialization / willpower / origin / difficulty)
+ * - Capture per-roll parameters (specialization / willpower / origin / difficulty)
  *   before the dialog triggers DiceRoller.
- * - Store those flags as a one-shot pending roll context for the current user.
+ * - Store those parameters as a one-shot pending roll context for the current user.
+ *
+ * Diagnostics:
+ * - This file is the earliest point in the roll pipeline we control.
+ * - We log *all* captured values here to correlate downstream behavior.
  *
  * IMPORTANT:
  * - We do NOT modify system files.
+ * - We do NOT change roll logic (only capture + logs).
  * - Patches are idempotent and guarded by per-method markers.
  */
 export async function registerRollDialogRollContextPatches() {
@@ -70,7 +76,6 @@ export async function registerRollDialogRollContextPatches() {
 
     await patchDialog(SYSTEM_IDS.DIALOG_ARETE_MODULE_PATH, "DialogAreteCasting", "_castSpell", {
       origin: "magic",
-      // Arete casting does not set `powerRoll.attribute`, so auto-success capture is irrelevant.
       attributeSelector: () => null,
       difficultySelector: (dialog) => dialog?.object?.totalDifficulty,
       specializedSelector: (dialog) => dialog?.object?.useSpeciality,
@@ -85,63 +90,48 @@ export async function registerRollDialogRollContextPatches() {
       willpowerSelector: () => false,
     });
 
-    info("Registered roll context patches for upstream roll dialogs");
+    info("Roll dialog roll context patches registered");
   } catch (err) {
-    error("Failed to register roll context patches", err);
+    error("Failed to register roll dialog patches", { err });
   }
 }
 
 /**
- * Patch a single dialog class from an upstream module.
+ * Patch a roll method on an upstream dialog prototype.
  *
- * @param {string} modulePath
- * @param {string} className
- * @param {string} rollMethodName
- * @param {{
- *  origin?: string,
- *  originSelector?: (dialog:any)=>string,
- *  attributeSelector?: (dialog:any)=>string|null,
- *  difficultySelector?: (dialog:any)=>number|null,
- *  specializedSelector?: (dialog:any)=>boolean,
- *  willpowerSelector?: (dialog:any)=>boolean
- * }} selectors
+ * @param {string} modulePath System module path where the dialog class is exported.
+ * @param {string} className Dialog class name.
+ * @param {string} rollMethodName Prototype method name that triggers the roll.
+ * @param {object} selectors Selector functions.
  */
 async function patchDialog(modulePath, className, rollMethodName, selectors) {
+  const marker = `__wodV20RbRollContextPatched__${rollMethodName}`;
+
   try {
     const mod = await import(modulePath);
     const DialogClass = mod?.[className];
 
-    if (!DialogClass) {
-      warn("Upstream dialog class not found; skipping roll context patch", { modulePath, className });
+    if (!DialogClass?.prototype) {
+      warn("Dialog class not found; skipping patch", { modulePath, className, rollMethodName });
       return;
     }
 
     const proto = DialogClass.prototype;
-
-    if (typeof proto[rollMethodName] !== "function") {
-      warn("Dialog roll method not found; skipping roll context patch", { className, rollMethodName });
+    if (proto[marker]) {
+      debug("Dialog roll method already patched; skipping", { className, rollMethodName });
       return;
     }
 
-    patchRollMethod(proto, className, rollMethodName, selectors);
-    debug("Patched dialog for roll context", { className, rollMethodName });
-  } catch (err) {
-    error("Failed to patch dialog for roll context", { modulePath, className, rollMethodName, err });
-  }
-}
+    const original = proto[rollMethodName];
+    if (typeof original !== "function") {
+      warn("Dialog roll method not found; skipping patch", { className, rollMethodName });
+      return;
+    }
 
-function patchRollMethod(proto, className, rollMethodName, selectors) {
-  const marker = `__rusbarHrPatched_rollctx_${className}_${rollMethodName}__`;
-  if (proto[marker] === true) return;
-
-  const original = proto[rollMethodName];
-
-  proto[rollMethodName] = async function patchedRollMethod(...args) {
-    try {
-      const userId = game?.user?.id;
-      if (userId) {
-        const actor = this?.actor;
-        const actorId = actor?.id ?? null;
+    proto[rollMethodName] = async function (...args) {
+      try {
+        const userId = game?.user?.id ?? null;
+        const actorId = this?.object?.actor?._id ?? this?.object?.actorId ?? this?.actor?.id ?? null;
 
         const origin =
           typeof selectors?.originSelector === "function"
@@ -152,41 +142,80 @@ function patchRollMethod(proto, className, rollMethodName, selectors) {
 
         const attribute = typeof selectors?.attributeSelector === "function" ? selectors.attributeSelector(this) : null;
         const difficulty = typeof selectors?.difficultySelector === "function" ? selectors.difficultySelector(this) : null;
-        const isSpecialized =
-          typeof selectors?.specializedSelector === "function" ? selectors.specializedSelector(this) === true : false;
-        const useWillpower =
-          typeof selectors?.willpowerSelector === "function" ? selectors.willpowerSelector(this) === true : false;
 
-        // One-shot context for the next chat message.
-        setPendingRollContext(userId, {
-          actorId,
-          attribute,
-          origin,
-          difficulty,
-          isSpecialized,
-          useWillpower,
-        });
+        // NOTE: We do not normalize or reinterpret values here (no logic changes).
+        // We only log raw values and what we store.
+        const rawSpecialized =
+          typeof selectors?.specializedSelector === "function" ? selectors.specializedSelector(this) : false;
+        const rawWillpower =
+          typeof selectors?.willpowerSelector === "function" ? selectors.willpowerSelector(this) : false;
 
-        debug("Prepared pending roll context", {
-          className,
-          rollMethodName,
-          userId,
-          actorId,
-          origin,
-          attribute,
-          difficulty,
-          isSpecialized,
-          useWillpower,
-        });
+        const isSpecialized = rawSpecialized === true;
+        const useWillpower = rawWillpower === true;
+
+        const rollTraceId = createRollTraceId(userId ?? undefined);
+
+        const elementRoot = this?.element?.[0] ?? this?.element ?? null;
+        const elementConnected = elementRoot && typeof elementRoot === "object" ? Boolean(elementRoot.isConnected) : null;
+
+        if (userId) {
+          // One-shot context for the next chat message.
+          setPendingRollContext(userId, {
+            rollTraceId,
+            actorId,
+            attribute,
+            origin,
+            difficulty,
+            isSpecialized,
+            useWillpower,
+          });
+
+          // Log *all* captured values (flat + raw) for diagnosis.
+          debug("Prepared pending roll context", {
+            rollTraceId,
+            className,
+            rollMethodName,
+            userId,
+            actorId,
+            origin,
+            attribute,
+            difficulty,
+            isSpecialized,
+            useWillpower,
+            raw: {
+              specialized: rawSpecialized,
+              willpower: rawWillpower,
+            },
+            dialog: {
+              elementConnected,
+              hasJqElement: Boolean(this?.element),
+            },
+          });
+        } else {
+          warn("No userId available while preparing pending roll context; skipping store write", {
+            rollTraceId,
+            className,
+            rollMethodName,
+            actorId,
+            origin,
+            attribute,
+            difficulty,
+            isSpecialized,
+            useWillpower,
+            raw: { specialized: rawSpecialized, willpower: rawWillpower },
+          });
+        }
+      } catch (err) {
+        // Never block upstream behavior.
+        warn("Failed to prepare pending roll context; continuing without context", { className, rollMethodName, err });
       }
-    } catch (err) {
-      // Never block upstream behavior.
-      warn("Failed to prepare pending roll context; continuing without context", { className, rollMethodName, err });
-    }
 
-    return await original.apply(this, args);
-  };
+      return await original.apply(this, args);
+    };
 
-  proto[marker] = true;
-  info("Patched dialog roll method for roll context", { className, rollMethodName });
+    proto[marker] = true;
+    info("Patched dialog roll method for roll context", { className, rollMethodName });
+  } catch (err) {
+    warn("Failed to patch dialog roll method; skipping", { modulePath, className, rollName: rollMethodName, err });
+  }
 }

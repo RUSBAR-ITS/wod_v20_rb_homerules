@@ -14,64 +14,69 @@ const { debug, warn } = debugNs("rollctx:store");
  *
  * Therefore we:
  * - Set a one-shot "pending" roll context right before a dialog triggers DiceRoller.
- * - Capture auto-successes when DiceRoller calls BonusHelper.GetAttributeAutoBuff().
- * - Attach the finalized context to the next ChatMessage in preCreateChatMessage.
+ * - Consume that context in preCreateChatMessage and attach it to message flags.
+ *
+ * Diagnostics:
+ * - This store is a critical junction where context can be lost (missing / overwritten / stale).
+ * - We log *all* values (flat) on set/consume/stale drop.
  */
 
-const GLOBAL_KEY = "__RUSBAR_HR_ROLL_CTX__";
+const GLOBAL_KEY = "__rusbarWodV20Homerules_rollContextStore__";
 
+/**
+ * @returns {{ pendingByUserId: Record<string, any> }}
+ */
 function getGlobalStore() {
-  if (!globalThis[GLOBAL_KEY]) {
-    globalThis[GLOBAL_KEY] = {
-      /** @type {Record<string, any>} */
-      pendingByUserId: {},
-    };
-  }
-  return globalThis[GLOBAL_KEY];
+  const g = globalThis;
+  if (!g[GLOBAL_KEY]) g[GLOBAL_KEY] = { pendingByUserId: {} };
+  return g[GLOBAL_KEY];
 }
 
 /**
- * Create a new pending roll context.
+ * Flatten a context into a log-friendly object.
+ * @param {any} ctx
+ */
+function summarizeCtx(ctx) {
+  if (!ctx) return null;
+  return {
+    rollTraceId: ctx.rollTraceId ?? null,
+    createdAtMs: ctx.createdAtMs ?? null,
+    actorId: ctx.actorId ?? null,
+    origin: ctx.origin ?? null,
+    attribute: ctx.attribute ?? null,
+    difficulty: ctx.difficulty ?? null,
+    isSpecialized: ctx.isSpecialized ?? null,
+    useWillpower: ctx.useWillpower ?? null,
+    autoSuccesses: ctx.autoSuccesses ?? null,
+  };
+}
+
+/**
+ * Set or replace the pending context for the given user.
  *
  * @param {string} userId
- * @param {{
- *  actorId?: string,
- *  attribute?: string,
- *  origin?: string,
- *  difficulty?: number,
- *  isSpecialized?: boolean,
- *  useWillpower?: boolean,
- *  nonce?: string
- * }} params
+ * @param {object} ctx
  */
-export function setPendingRollContext(userId, params) {
+export function setPendingRollContext(userId, ctx) {
   const store = getGlobalStore();
 
-  const now = Date.now();
-  const ctx = {
-    nonce: String(params?.nonce ?? crypto?.randomUUID?.() ?? `${now}-${Math.random()}`),
-    createdAtMs: now,
-
-    // Roll inputs we want to persist.
-    actorId: params?.actorId ?? null,
-    attribute: params?.attribute ?? null,
-    origin: params?.origin ?? null,
-    difficulty: Number.isFinite(Number(params?.difficulty)) ? Number(params.difficulty) : null,
-    isSpecialized: params?.isSpecialized === true,
-    useWillpower: params?.useWillpower === true,
-
-    // Captured later inside DiceRoller via BonusHelper wrapper.
-    autoSuccesses: 0,
+  const createdAtMs = Date.now();
+  const next = {
+    ...ctx,
+    createdAtMs,
   };
 
-  store.pendingByUserId[userId] = ctx;
-  debug("setPendingRollContext", { userId, ctx });
+  store.pendingByUserId[userId] = next;
+
+  debug("setPendingRollContext", {
+    userId,
+    createdAtMs,
+    ctx: summarizeCtx(next),
+  });
 }
 
 /**
- * Best-effort update of auto-successes for the pending context.
- *
- * This is called from our BonusHelper.GetAttributeAutoBuff wrapper.
+ * Set auto-successes for the user's current pending context (best-effort).
  *
  * @param {string} userId
  * @param {{ actorId?: string, attribute?: string, autoSuccesses?: number }} params
@@ -80,15 +85,49 @@ export function setPendingAutoSuccesses(userId, params) {
   const store = getGlobalStore();
   const ctx = store.pendingByUserId?.[userId];
 
-  if (!ctx) return;
+  if (!ctx) {
+    debug("setPendingAutoSuccesses: skipped (no pending ctx)", {
+      userId,
+      params,
+    });
+    return;
+  }
 
   // Guard: try to avoid attaching an unrelated auto-buff to a different pending roll.
-  if (params?.actorId && ctx.actorId && params.actorId !== ctx.actorId) return;
-  if (params?.attribute && ctx.attribute && params.attribute !== ctx.attribute) return;
+  if (params?.actorId && ctx.actorId && params.actorId !== ctx.actorId) {
+    debug("setPendingAutoSuccesses: skipped (actorId mismatch)", {
+      userId,
+      rollTraceId: ctx.rollTraceId ?? null,
+      pendingActorId: ctx.actorId,
+      paramsActorId: params.actorId,
+      params,
+    });
+    return;
+  }
+  if (params?.attribute && ctx.attribute && params.attribute !== ctx.attribute) {
+    debug("setPendingAutoSuccesses: skipped (attribute mismatch)", {
+      userId,
+      rollTraceId: ctx.rollTraceId ?? null,
+      pendingAttribute: ctx.attribute,
+      paramsAttribute: params.attribute,
+      params,
+    });
+    return;
+  }
 
   const v = Number.parseInt(params?.autoSuccesses ?? 0, 10);
   ctx.autoSuccesses = Number.isFinite(v) && v > 0 ? v : 0;
-  debug("setPendingAutoSuccesses", { userId, actorId: params?.actorId, attribute: params?.attribute, v: ctx.autoSuccesses });
+
+  debug("setPendingAutoSuccesses", {
+    userId,
+    rollTraceId: ctx.rollTraceId ?? null,
+    actorId: params?.actorId ?? null,
+    attribute: params?.attribute ?? null,
+    rawAutoSuccesses: params?.autoSuccesses ?? null,
+    parsedAutoSuccesses: v,
+    storedAutoSuccesses: ctx.autoSuccesses,
+    ctx: summarizeCtx(ctx),
+  });
 }
 
 /**
@@ -96,20 +135,43 @@ export function setPendingAutoSuccesses(userId, params) {
  *
  * @param {string} userId
  * @param {number} [maxAgeMs=4000]
+ * @returns {object|null}
  */
 export function consumePendingRollContext(userId, maxAgeMs = 4000) {
   const store = getGlobalStore();
   const ctx = store.pendingByUserId?.[userId];
-  if (!ctx) return null;
+  if (!ctx) {
+    debug("consumePendingRollContext: none", { userId, maxAgeMs });
+    return null;
+  }
 
-  const age = Date.now() - (ctx.createdAtMs || 0);
+  const now = Date.now();
+  const createdAt = ctx.createdAtMs || 0;
+  const age = now - createdAt;
+
   if (age > maxAgeMs) {
-    warn("Pending roll context is stale; dropping", { userId, age, ctx });
+    warn("Pending roll context is stale; dropping", {
+      userId,
+      maxAgeMs,
+      now,
+      createdAtMs: createdAt,
+      ageMs: age,
+      ctx: summarizeCtx(ctx),
+    });
     delete store.pendingByUserId[userId];
     return null;
   }
 
   delete store.pendingByUserId[userId];
-  debug("consumePendingRollContext", { userId, ctx });
+
+  debug("consumePendingRollContext", {
+    userId,
+    maxAgeMs,
+    now,
+    createdAtMs: createdAt,
+    ageMs: age,
+    ctx: summarizeCtx(ctx),
+  });
+
   return ctx;
 }

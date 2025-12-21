@@ -8,29 +8,54 @@ const { debug, info, error } = debugNs("rollctx:chat");
  * Attach our one-shot roll context to the next created ChatMessage.
  *
  * We use preCreateChatMessage so we can mutate the message data before it is persisted.
+ *
+ * Diagnostics:
+ * - Logs both "attach" and "skip" paths with all values we can observe.
  */
 export function registerRollContextChatAttachmentHook() {
   Hooks.on("preCreateChatMessage", (doc, data, _options, userId) => {
     try {
       // Only attach for the user who created the message.
       const uid = userId ?? game?.user?.id;
-      if (!uid) return;
-
-      // We only care about system roll cards. Avoid touching unrelated chat messages.
-      const content = String(data?.content ?? "");
-      if (!content.includes('class="wod20-roll"') && !content.includes("class='wod20-roll")) return;
+      if (!uid) {
+        debug("preCreateChatMessage: skipped (no userId)", { messageId: doc?.id ?? null });
+        return;
+      }
 
       const ctx = consumePendingRollContext(uid);
-      if (!ctx) return;
 
-      // Attach under our module namespace.
-      data.flags ??= {};
-      data.flags[MODULE_ID] ??= {};
+      if (!ctx) {
+        debug("preCreateChatMessage: no pending roll context to attach", {
+          userId: uid,
+          messageId: doc?.id ?? null,
+          // Useful to see if this is a roll message at all.
+          type: data?.type ?? null,
+          speaker: data?.speaker ?? null,
+          flavor: data?.flavor ?? null,
+        });
+        return;
+      }
+
+      // Ensure flags container exists.
+      if (!data.flags) data.flags = {};
+      if (!data.flags[MODULE_ID]) data.flags[MODULE_ID] = {};
+
       data.flags[MODULE_ID].rollContext = ctx;
 
       debug("Attached roll context to ChatMessage", {
         userId: uid,
-        messageId: doc?.id,
+        messageId: doc?.id ?? null,
+        flagsPath: `flags.${MODULE_ID}.rollContext`,
+        // Flatten the most important values so they show up in the console.
+        rollTraceId: ctx.rollTraceId ?? null,
+        actorId: ctx.actorId ?? null,
+        origin: ctx.origin ?? null,
+        attribute: ctx.attribute ?? null,
+        difficulty: ctx.difficulty ?? null,
+        isSpecialized: ctx.isSpecialized ?? null,
+        useWillpower: ctx.useWillpower ?? null,
+        autoSuccesses: ctx.autoSuccesses ?? null,
+        // And keep full object for deep inspection when needed.
         ctx,
       });
     } catch (err) {
