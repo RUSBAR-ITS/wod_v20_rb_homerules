@@ -56,6 +56,24 @@ export function registerSettings() {
   });
 
   /**
+   * preserveItemImagePaths:
+   * - Preserves incoming custom Item.img paths (e.g. modules/... or worlds/...)
+   *   when the WoD20 system overwrites Item.img with its default icons on create/update.
+   */
+  game.settings.register(MODULE_ID, SETTINGS_KEYS.PRESERVE_ITEM_IMAGE_PATHS, {
+    name: "rusbar.homerules.settings.preserveItemImagePaths.name",
+    hint: "rusbar.homerules.settings.preserveItemImagePaths.hint",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: () => {
+      // Intentionally no logger usage here.
+      // Hooks are always registered; this flag gates actual behavior.
+    }
+  });
+
+  /**
    * enableDebug:
    * - Enables extended debug logging for THIS module.
    * - This does not affect the system itself.

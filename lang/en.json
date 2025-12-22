@@ -14,6 +14,10 @@
         "enableDebug": {
           "name": "Enable debug logging",
           "hint": "Enables extended debug logging for the module."
+        },
+        "preserveItemImagePaths": {
+           "name": "Preserve custom Item icons",
+           "hint": "Restores Item.img after the WoD20 system overwrites it with default icons when importing or adding items to actors."
         }
       },
       "fate": {

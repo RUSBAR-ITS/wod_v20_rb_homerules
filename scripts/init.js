@@ -27,6 +27,8 @@ import { registerRollContextChatAttachmentHook } from "./roll-context/attach-rol
 import { injectBloodpoolExtras } from "./vampire/bloodpool/inject-bloodpool-extras.js";
 import { enforceBloodpoolMaxPerRow } from "./vampire/bloodpool/enforce-bloodpool-max-per-row.js";
 
+import { registerPreserveItemImagesHooks } from "./items/preserve-item-images.js";
+
 const { debug, info, warn, error } = debugNs("init");
 
 /**
@@ -39,6 +41,15 @@ const { debug, info, warn, error } = debugNs("init");
  */
 Hooks.once("init", () => {
   registerSettings();
+
+  /**
+   * Preserve item images (icons) when creating/updating Items, including embedded Items on Actors.
+   *
+   * Motivation:
+   * Some system workflows overwrite `img` with the default icon during document creation or updates.
+   * We remember the original (custom) img path and re-apply it if it gets replaced by the default.
+   */
+  registerPreserveItemImagesHooks();
 
   /**
    * Dice So Nice integration:
