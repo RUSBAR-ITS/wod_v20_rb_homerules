@@ -41,10 +41,31 @@ export function registerEvilBotchesChatHook() {
         return;
       }
 
+      // IMPORTANT:
+      // Evil Botches must only run when the SYSTEM would actually subtract ones.
+      // This includes:
+      // - global handleOnes
+      // - origin-specific useOnes* toggles (soak/damage)
+      // - actor presence (system checks actor before applying ones logic)
+      // - favorited/exalted checks (system does NOT subtract ones for favorited traits)
+      const actor = getActorFromRollContext(rollCtx);
+      const gate = shouldApplyEvilBotchesToRoll({ rollCtx, actor });
+      if (gate.ok !== true) {
+        debug("Evil Botches: gating skipped", {
+          messageId: message?.id ?? null,
+          rollTraceId: rollCtx?.rollTraceId ?? null,
+          reason: gate.reason,
+          detailsJson: safeJsonStringify(gate.details ?? null),
+        });
+        return;
+      }
+
       // --- DIAGNOSTICS: log incoming message + settings + context snapshot ---
       const settingsSnapshot = {
         moduleEnabled: isEvilBotchesEnabled(),
         systemHandleOnes: isSystemSubtractOnesEnabled(),
+        gateOk: gate.ok,
+        gateReason: gate.reason,
         systemTenRule: CONFIG?.worldofdarkness?.usetenAddSuccess ?? null,
         systemTenAddSuccess: CONFIG?.worldofdarkness?.tenAddSuccess ?? null,
         systemSpecialtyRule: CONFIG?.worldofdarkness?.usespecialityAddSuccess ?? null,
@@ -265,6 +286,137 @@ function isEvilBotchesEnabled() {
 
 function isSystemSubtractOnesEnabled() {
   return CONFIG?.worldofdarkness?.handleOnes === true;
+}
+
+/**
+ * Retrieve the Actor referenced by our structured roll context.
+ *
+ * We intentionally do not try to infer actor from the ChatMessage speaker,
+ * because in some edge cases (GM whisper, synthetic speaker, macro rolls)
+ * it may not match the actual roll source.
+ */
+function getActorFromRollContext(rollCtx) {
+  try {
+    const actorId = rollCtx?.actorId ?? null;
+    if (!actorId) return null;
+    return game?.actors?.get(actorId) ?? null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
+ * Decide if we should apply Evil Botches to this message.
+ *
+ * Evil Botches must only run when the SYSTEM would actually subtract ones.
+ * Otherwise, chat output becomes inconsistent with the real roll result.
+ */
+function shouldApplyEvilBotchesToRoll({ rollCtx, actor }) {
+  const origin = rollCtx?.origin ?? null;
+
+  // Global system toggle.
+  if (CONFIG?.worldofdarkness?.handleOnes !== true) {
+    return {
+      ok: false,
+      reason: "system-handleOnes-disabled",
+      details: { origin },
+    };
+  }
+
+  // Origin-specific system toggles.
+  if (origin === "soak" && CONFIG?.worldofdarkness?.useOnesSoak !== true) {
+    return {
+      ok: false,
+      reason: "system-useOnesSoak-disabled",
+      details: { origin },
+    };
+  }
+
+  if (origin === "damage" && CONFIG?.worldofdarkness?.useOnesDamage !== true) {
+    return {
+      ok: false,
+      reason: "system-useOnesDamage-disabled",
+      details: { origin },
+    };
+  }
+
+  // System roll logic checks actor presence before applying ones logic.
+  // If we don't have an actor, we cannot reliably mirror system behavior.
+  if (!actor) {
+    return {
+      ok: false,
+      reason: "no-actor",
+      details: {
+        origin,
+        actorId: rollCtx?.actorId ?? null,
+        attribute: rollCtx?.attribute ?? null,
+        ability: rollCtx?.ability ?? null,
+      },
+    };
+  }
+
+  // System does NOT subtract ones for favorited traits.
+  // We mirror that to keep chat display consistent.
+  const fav = getFavoritedSnapshot(actor, rollCtx);
+  if (fav.isFavorited === true) {
+    return {
+      ok: false,
+      reason: "favorited-trait",
+      details: {
+        origin,
+        actorId: actor.id,
+        attribute: fav.attribute,
+        ability: fav.ability,
+        hits: fav.hits,
+      },
+    };
+  }
+
+  return {
+    ok: true,
+    reason: "ok",
+    details: {
+      origin,
+      actorId: actor.id,
+    },
+  };
+}
+
+/**
+ * Mirror the system's "favorited" checks used to bypass subtract-ones logic.
+ *
+ * The system checks both attributes and abilities namespaces for both keys
+ * (attribute and ability), because those keys can swap depending on the roll.
+ */
+function getFavoritedSnapshot(actor, rollCtx) {
+  const attribute = rollCtx?.attribute ?? null;
+  const ability = rollCtx?.ability ?? null;
+
+  const hits = [];
+
+  try {
+    const sys = actor?.system ?? null;
+    const attrs = sys?.attributes ?? null;
+    const abils = sys?.abilities ?? null;
+
+    // attributes[attribute]
+    if (attribute && attrs?.[attribute]?.isfavorited === true) hits.push({ path: `attributes.${attribute}.isfavorited` });
+    // attributes[ability]
+    if (ability && attrs?.[ability]?.isfavorited === true) hits.push({ path: `attributes.${ability}.isfavorited` });
+    // abilities[attribute]
+    if (attribute && abils?.[attribute]?.isfavorited === true) hits.push({ path: `abilities.${attribute}.isfavorited` });
+    // abilities[ability]
+    if (ability && abils?.[ability]?.isfavorited === true) hits.push({ path: `abilities.${ability}.isfavorited` });
+  } catch (_err) {
+    // ignore
+  }
+
+  return {
+    attribute,
+    ability,
+    isFavorited: hits.length > 0,
+    hits,
+  };
 }
 
 function getTenSuccessValue(isSpecialized) {
