@@ -57,7 +57,8 @@ export async function renderFateScale(app, html) {
 
     const fate = foundry.utils.duplicate(app.actor?.system?.advantages?.fate ?? {});
 
-    const fateHtml = await renderTemplate(FATE_UI.TEMPLATE_PATH, {
+    // NOTE: Foundry v13 deprecates global renderTemplate. Use Handlebars helper instead.
+    const fateHtml = await foundry.applications.handlebars.renderTemplate(FATE_UI.TEMPLATE_PATH, {
       actor: app.actor,
       fate,
     });

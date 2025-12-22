@@ -41,7 +41,8 @@ const { debug, warn, error } = debugNs("evil-botches:chat");
  * - Mirrors the upstream system's own exceptions (origin toggles, actor checks, favorited traits, etc).
  */
 export function registerEvilBotchesChatHook() {
-  Hooks.on("renderChatMessage", (message, html) => {
+  // Foundry v13 deprecates renderChatMessage. Use renderChatMessageHTML instead.
+  Hooks.on("renderChatMessageHTML", (message, html) => {
     try {
       // 1) Fast global gates (no per-message heavy work).
       if (isEvilBotchesEnabled() !== true) return;
@@ -175,7 +176,7 @@ export function registerEvilBotchesChatHook() {
         replaced,
       });
     } catch (err) {
-      error("Evil Botches renderChatMessage failed", err);
+      error("Evil Botches renderChatMessageHTML failed", err);
     }
   });
 }
