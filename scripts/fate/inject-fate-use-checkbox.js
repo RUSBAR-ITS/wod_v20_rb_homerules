@@ -57,6 +57,22 @@ function injectIntoDialog(app, html, dialogName) {
     // Defensive: ensure we have DOM.
     if (!html || html.length === 0) return;
 
+    // Foundry can fire render hooks before the form element is actually connected to DOM.
+    // Some browsers emit "Form submission canceled because the form is not connected" when
+    // FormApplication (submitOnChange) tries to submit a detached <form>.
+    //
+    // We defer the injection by one tick and only proceed if the element is connected.
+    if (html?.[0]?.isConnected !== true) {
+      setTimeout(() => {
+        try {
+          if (html?.[0]?.isConnected === true) injectIntoDialog(app, html, dialogName);
+        } catch (_err) {
+          // Best-effort UI enhancement. Never crash.
+        }
+      }, 0);
+      return;
+    }
+
     // Prevent double injection.
     if (html.attr(MARKER_ATTR) === "true") return;
     html.attr(MARKER_ATTR, "true");
@@ -157,14 +173,19 @@ function injectIntoDialog(app, html, dialogName) {
 
     // Build checkbox block.
     // We mimic upstream structure: `.clearareaBox.infobox.dialog-checkbox`.
+    //
+    // IMPORTANT: Provide a real input `id` and match label's `for`.
+    // Using `for=name` is invalid, and can cause oddities with change/submit handling.
     const checkboxLabel = game.i18n.localize("rusbar.homerules.fate.useFate");
+    const checkboxId = `rusbar-use-fate-${app?.id ?? foundry?.utils?.randomID?.() ?? Math.random().toString(36).slice(2)}`;
+
     const checkboxBlock = $(
       `<div class="clearareaBox infobox dialog-checkbox rusbar-fate-use-checkbox">
          <div class="pullLeft">
-           <input name="${USE_FATE_FIELD_NAME}" type="checkbox" />
+           <input id="${checkboxId}" name="${USE_FATE_FIELD_NAME}" type="checkbox" />
          </div>
          <div class="pullLeft">
-           <label for="${USE_FATE_FIELD_NAME}" class="pullLeft">${checkboxLabel}</label>
+           <label for="${checkboxId}" class="pullLeft">${checkboxLabel}</label>
          </div>
        </div>`
     );

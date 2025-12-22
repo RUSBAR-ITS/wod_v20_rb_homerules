@@ -5,7 +5,9 @@ export function logHookStart(debug, message, rollCtx, settingsSnapshot, safeJson
   debug("Evil Botches: hook start", {
     messageId: message?.id ?? null,
     rollTraceId: rollCtx?.rollTraceId ?? null,
-    userId: message?.user?.id ?? null,
+    // Foundry v12+ migrated ChatMessage.user -> ChatMessage.author (User).
+    // Keep a small fallback for older versions / odd message shapes.
+    userId: message?.author?.id ?? message?.user?.id ?? null,
     speaker: message?.speaker ?? null,
     flagsHasRollContext: Boolean(rollCtx),
     // Log as strings so that file logs remain readable (no collapsed "Object").

@@ -57,7 +57,9 @@ export function registerEvilBotchesChatHook() {
       if (!rollCtx) {
         debug("Evil Botches: no rollContext on message; skipping", {
           messageId: message?.id ?? null,
-          userId: message?.user?.id ?? null,
+          // Foundry v12+ migrated ChatMessage.user -> ChatMessage.author (User).
+          // Keep a fallback for older versions.
+          userId: message?.author?.id ?? message?.user?.id ?? null,
           speaker: message?.speaker ?? null,
         });
         return;

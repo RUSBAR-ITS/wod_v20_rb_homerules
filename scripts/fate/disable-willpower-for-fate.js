@@ -44,39 +44,57 @@ export function registerDisableWillpowerForFateHook() {
 
       if (!isFateNoAbility) return;
 
-      /**
-       * Find the checkbox by its form name.
-       * Upstream dialog uses this name in form data processing.
-       */
-      const checkbox = html.find('input[name="useWillpower"]');
-      if (!checkbox.length) {
-        warn("Could not find useWillpower checkbox in DialogGeneralRoll for Fate.");
+      // Foundry can fire render hooks before the dialog form is actually connected to DOM.
+      // Since DialogGeneralRoll uses `submitOnChange: true`, some browsers warn when a submit
+      // is attempted on a detached <form>. We only touch DOM when connected, deferring by one tick.
+      const applyPatch = () => {
+        /**
+         * Find the checkbox by its form name.
+         * Upstream dialog uses this name in form data processing.
+         */
+        const checkbox = html.find('input[name="useWillpower"]');
+        if (!checkbox.length) {
+          warn("Could not find useWillpower checkbox in DialogGeneralRoll for Fate.");
+          return;
+        }
+
+        /**
+         * Force checkbox off and disable it so it cannot be submitted.
+         */
+        checkbox.prop("checked", false);
+        checkbox.prop("disabled", true);
+
+        /**
+         * Hide the checkbox row to avoid confusing UI.
+         * We keep this as "best effort": if the selector doesn't match, we still
+         * have the checkbox disabled.
+         */
+        const container = checkbox.closest(".dialog-checkbox");
+        if (container.length) container.hide();
+
+        /**
+         * Safety belt:
+         * Some system implementations read the roll object state rather than
+         * relying purely on formData. We defensively set both common variants.
+         */
+        if ("useWillpower" in roll) roll.useWillpower = false;
+        if ("usewillpower" in roll) roll.usewillpower = false;
+
+        debug("Disabled willpower option for Fate roll dialog");
+      };
+
+      if (html?.[0]?.isConnected !== true) {
+        setTimeout(() => {
+          try {
+            if (html?.[0]?.isConnected === true) applyPatch();
+          } catch (_err) {
+            // Best-effort UI enhancement. Never crash.
+          }
+        }, 0);
         return;
       }
 
-      /**
-       * Force checkbox off and disable it so it cannot be submitted.
-       */
-      checkbox.prop("checked", false);
-      checkbox.prop("disabled", true);
-
-      /**
-       * Hide the checkbox row to avoid confusing UI.
-       * We keep this as "best effort": if the selector doesn't match, we still
-       * have the checkbox disabled.
-       */
-      const container = checkbox.closest(".dialog-checkbox");
-      if (container.length) container.hide();
-
-      /**
-       * Safety belt:
-       * Some system implementations read the roll object state rather than
-       * relying purely on formData. We defensively set both common variants.
-       */
-      if ("useWillpower" in roll) roll.useWillpower = false;
-      if ("usewillpower" in roll) roll.usewillpower = false;
-
-      debug("Disabled willpower option for Fate roll dialog");
+      applyPatch();
     } catch (_err) {
       /**
        * This is a UI enhancement, never allow it to crash the application.
