@@ -9,47 +9,51 @@ import { shouldApplyEvilBotchesToRoll } from "./gating/should-apply-evil-botches
 
 import { getMessageRolls } from "./rolls/get-message-rolls.js";
 import { extractD10ValuesFromRolls } from "./rolls/extract-d10-values-from-rolls.js";
-import { getTenSuccessValue } from "./rolls/get-ten-success-value.js";
-
-import { computeOutcome } from "./outcome/compute-outcome.js";
-import { formatOutcomeText } from "./outcome/format-outcome-text.js";
-
-import { safeJsonStringify } from "./debug/safe-json-stringify.js";
+import { computeEvilBotchesResult } from "./rolls/compute-evil-botches-result.js";
 
 import { getRollAreas } from "./dom/get-roll-areas.js";
 import { getSuccessArea } from "./dom/get-success-area.js";
 import { getDirectSuccessDivs } from "./dom/get-direct-success-divs.js";
 import { replaceOutcomeLine } from "./dom/replace-outcome-line.js";
 
+import { safeJsonStringify } from "./debug/safe-json-stringify.js";
+import { buildSettingsSnapshot } from "./debug/build-settings-snapshot.js";
+import { logHookStart } from "./debug/log-hook-start.js";
+import { logGateSkip } from "./debug/log-gate-skip.js";
+import { logContextInputs } from "./debug/log-context-inputs.js";
+import { logMessageRollsSnapshot } from "./debug/log-message-rolls-snapshot.js";
+import { logCalc } from "./debug/log-calc.js";
+import { logReplaced } from "./debug/log-replaced.js";
+
 const { debug, warn, error } = debugNs("evil-botches:chat");
 
 /**
  * Evil Botches (chat-only):
  *
- * This feature is intentionally display-only:
- * - We do NOT modify any system roll logic.
+ * IMPORTANT:
+ * - This feature is intentionally display-only.
+ * - We do NOT modify any upstream roll logic.
  * - We only replace the rendered result line inside the chat card.
  *
- * Key constraints:
- * - Applies ONLY when the system subtracts ones from successes.
+ * Gating:
+ * - Applies ONLY when the system subtracts ones from successes (CONFIG.worldofdarkness.handleOnes === true).
  * - Applies ONLY when our module setting is enabled.
- * - Must mirror the system's own gating (origin toggles, actor checks, favorited traits, etc)
- *   so that the chat display remains consistent with what the system actually does.
+ * - Mirrors the upstream system's own exceptions (origin toggles, actor checks, favorited traits, etc).
  */
 export function registerEvilBotchesChatHook() {
   Hooks.on("renderChatMessage", (message, html) => {
     try {
+      // 1) Fast global gates (no per-message heavy work).
       if (isEvilBotchesEnabled() !== true) return;
       if (isSystemSubtractOnesEnabled() !== true) return;
 
+      // 2) Resolve the DOM root for the rendered chat message.
       const root = html?.[0] ?? html;
       if (!(root instanceof HTMLElement)) return;
 
+      // 3) Read the structured roll context attached by our roll-context hooks.
+      //    We intentionally do NOT parse localized HTML.
       const rollCtx = message?.flags?.[MODULE_ID]?.rollContext ?? null;
-
-      // IMPORTANT:
-      // We do NOT parse difficulty/specialization/willpower from the rendered chat card.
-      // We rely exclusively on our structured roll context attached in preCreateChatMessage.
       if (!rollCtx) {
         debug("Evil Botches: no rollContext on message; skipping", {
           messageId: message?.id ?? null,
@@ -59,51 +63,19 @@ export function registerEvilBotchesChatHook() {
         return;
       }
 
-      // IMPORTANT:
-      // Evil Botches must only run when the SYSTEM would actually subtract ones.
-      // This includes:
-      // - global handleOnes
-      // - origin-specific useOnes* toggles (soak/damage)
-      // - actor presence (system checks actor before applying ones logic)
-      // - favorited/exalted checks (system does NOT subtract ones for favorited traits)
+      // 4) Mirror system gating to avoid chat mismatch.
       const actor = getActorFromRollContext(rollCtx);
       const gate = shouldApplyEvilBotchesToRoll({ rollCtx, actor });
       if (gate.ok !== true) {
-        debug("Evil Botches: gating skipped", {
-          messageId: message?.id ?? null,
-          rollTraceId: rollCtx?.rollTraceId ?? null,
-          reason: gate.reason,
-          detailsJson: safeJsonStringify(gate.details ?? null),
-        });
+        logGateSkip(debug, message, rollCtx, gate, safeJsonStringify);
         return;
       }
 
-      // --- DIAGNOSTICS: log incoming message + settings + context snapshot ---
-      const settingsSnapshot = {
-        moduleEnabled: isEvilBotchesEnabled(),
-        systemHandleOnes: isSystemSubtractOnesEnabled(),
-        gateOk: gate.ok,
-        gateReason: gate.reason,
-        systemTenRule: CONFIG?.worldofdarkness?.usetenAddSuccess ?? null,
-        systemTenAddSuccess: CONFIG?.worldofdarkness?.tenAddSuccess ?? null,
-        systemSpecialtyRule: CONFIG?.worldofdarkness?.usespecialityAddSuccess ?? null,
-        systemSpecialtyAddSuccess: CONFIG?.worldofdarkness?.specialityAddSuccess ?? null,
-        systemSpecialtyAllowBotch: CONFIG?.worldofdarkness?.specialityAllowBotch ?? null,
-        systemUseOnesSoak: CONFIG?.worldofdarkness?.useOnesSoak ?? null,
-        systemUseOnesDamage: CONFIG?.worldofdarkness?.useOnesDamage ?? null,
-      };
+      // 5) Diagnostics (moved into debug helpers to keep this file orchestration-only).
+      const settingsSnapshot = buildSettingsSnapshot({ gate, isEvilBotchesEnabled, isSystemSubtractOnesEnabled });
+      logHookStart(debug, message, rollCtx, settingsSnapshot, safeJsonStringify);
 
-      debug("Evil Botches: hook start", {
-        messageId: message?.id ?? null,
-        rollTraceId: rollCtx?.rollTraceId ?? null,
-        userId: message?.user?.id ?? null,
-        speaker: message?.speaker ?? null,
-        flagsHasRollContext: Boolean(rollCtx),
-        // Log as strings so that file logs remain readable (no collapsed "Object").
-        rollCtxJson: safeJsonStringify(rollCtx),
-        settingsSnapshotJson: safeJsonStringify(settingsSnapshot),
-      });
-
+      // 6) Validate required roll parameters.
       const difficulty = Number(rollCtx?.difficulty);
       if (!Number.isFinite(difficulty)) {
         debug("Evil Botches: rollContext.difficulty missing/invalid; skipping", {
@@ -124,49 +96,25 @@ export function registerEvilBotchesChatHook() {
       const origin = rollCtx?.origin ?? null;
       const isSpecialized = rollCtx.isSpecialized === true;
       const isWillpowerUsed = rollCtx.useWillpower === true;
+      const autoSuccesses = rollCtx?.autoSuccesses ? Number(rollCtx.autoSuccesses) : 0;
 
-      debug("Evil Botches: context inputs", {
-        messageId: message?.id ?? null,
-        rollTraceId: rollCtx?.rollTraceId ?? null,
+      logContextInputs(debug, message, rollCtx, {
         origin,
         isSpecialized,
         isWillpowerUsed,
-        source: {
-          origin: "flags",
-          isSpecialized: "flags",
-          useWillpower: "flags",
-        },
-        rawFlags: {
-          difficulty: rollCtx?.difficulty ?? null,
-          isSpecialized: rollCtx?.isSpecialized ?? null,
-          useWillpower: rollCtx?.useWillpower ?? null,
-          actorId: rollCtx?.actorId ?? null,
-          attribute: rollCtx?.attribute ?? null,
-          autoSuccesses: rollCtx?.autoSuccesses ?? null,
-        },
       });
 
-      const autoSuccesses = rollCtx?.autoSuccesses ? Number(rollCtx.autoSuccesses) : 0;
-
-      // We read dice results from the Roll objects attached to the ChatMessage.
-      // This is more reliable than parsing HTML or image attributes, and is locale-independent.
+      // 7) Extract dice results from Roll objects.
       const msgRolls = getMessageRolls(message);
+      const dieValues = extractD10ValuesFromRolls(msgRolls);
 
-      // The WoD system commonly stores a big dice pool as multiple Roll objects (often each Roll is 1d10).
-      // We treat ALL message rolls as a single pool and compute the outcome once.
-      const allDieValues = extractD10ValuesFromRolls(msgRolls);
-
-      debug("Evil Botches: message rolls snapshot", {
-        messageId: message?.id ?? null,
-        rollTraceId: rollCtx?.rollTraceId ?? null,
-        rollsCount: msgRolls.length,
-        hasMessageRoll: Boolean(message?.roll),
-        hasMessageRolls: Array.isArray(message?.rolls) && message.rolls.length > 0,
-        d10ValuesCount: allDieValues.length,
-        d10ValuesJson: safeJsonStringify(allDieValues),
+      logMessageRollsSnapshot(debug, message, rollCtx, {
+        msgRolls,
+        dieValues,
+        safeJsonStringify,
       });
 
-      if (allDieValues.length === 0) {
+      if (dieValues.length === 0) {
         debug("Evil Botches: no d10 results found in message rolls; skipping", {
           messageId: message?.id ?? null,
           rollTraceId: rollCtx?.rollTraceId ?? null,
@@ -175,36 +123,17 @@ export function registerEvilBotchesChatHook() {
         return;
       }
 
-      // Compute outcome once for the whole pool.
-      let ones = 0;
-      let diceSuccesses = 0;
+      // 8) Compute the Evil Botches outcome (math moved into a dedicated helper module).
+      const calc = computeEvilBotchesResult({
+        dieValues,
+        difficulty,
+        isSpecialized,
+        autoSuccesses,
+        isWillpowerUsed,
+      });
 
-      // Success counting, matching system behavior before subtracting ones:
-      // - 1s are counted separately and are NOT successes
-      // - 10s contribute according to system config (and specialization)
-      // - other dice >= difficulty => +1
-      for (const value of allDieValues) {
-        if (value === 1) {
-          ones += 1;
-          continue;
-        }
-
-        if (value === 10) {
-          diceSuccesses += getTenSuccessValue(isSpecialized);
-          continue;
-        }
-
-        if (value >= difficulty) {
-          diceSuccesses += 1;
-        }
-      }
-
-      const successesBeforeOnes = diceSuccesses + (Number.isFinite(autoSuccesses) ? autoSuccesses : 0);
-      const out = computeOutcome(successesBeforeOnes, ones, isWillpowerUsed);
-      const outText = formatOutcomeText(out);
-
+      // 9) Apply outcome line to each rendered roll area.
       let replaced = 0;
-
       for (let idx = 0; idx < rollAreas.length; idx += 1) {
         const area = rollAreas[idx];
 
@@ -215,59 +144,34 @@ export function registerEvilBotchesChatHook() {
         }
 
         // System template renders result lines as direct <div> children inside `.tray-success-area`.
-        // We replace the whole content with a single line (per requirements).
+        // We keep this structure check to avoid touching unexpected templates.
         const directDivs = getDirectSuccessDivs(successArea);
         if (directDivs.length === 0) {
           debug("Evil Botches: no direct divs found in success area", { messageId: message?.id });
           continue;
         }
 
-        debug("Evil Botches calc", {
-          messageId: message?.id ?? null,
-          rollTraceId: rollCtx?.rollTraceId ?? null,
+        logCalc(debug, message, rollCtx, {
           areaIndex: idx,
           difficulty,
+          origin,
           isSpecialized,
           isWillpowerUsed,
-          ones,
           autoSuccesses,
-          successesFromDice: diceSuccesses,
-          successesBeforeSubtractOnes: successesBeforeOnes,
-          netBeforeWillpower: out.netBeforeWillpower,
-          netAfterWillpower: out.netAfterWillpower,
-          willpowerRuleApplied: out.willpowerRuleApplied,
-          outcome: out,
-          diceCount: allDieValues.length,
-          dieValuesJson: safeJsonStringify(allDieValues),
-          tenValue: getTenSuccessValue(isSpecialized),
-          tenValueIfSpecialized: getTenSuccessValue(true),
-          tenValueIfNotSpecialized: getTenSuccessValue(false),
-          cfg: {
-            handleOnes: CONFIG?.worldofdarkness?.handleOnes === true,
-            usetenAddSuccess: CONFIG?.worldofdarkness?.usetenAddSuccess === true,
-            tenAddSuccess: CONFIG?.worldofdarkness?.tenAddSuccess,
-            usespecialityAddSuccess: CONFIG?.worldofdarkness?.usespecialityAddSuccess === true,
-            specialityAddSuccess: CONFIG?.worldofdarkness?.specialityAddSuccess,
-            specialityAllowBotch: CONFIG?.worldofdarkness?.specialityAllowBotch === true,
-            useOnesSoak: CONFIG?.worldofdarkness?.useOnesSoak === true,
-            useOnesDamage: CONFIG?.worldofdarkness?.useOnesDamage === true,
-          },
-          origin,
+          dieValues,
+          calc,
+          safeJsonStringify,
         });
 
-        replaceOutcomeLine(successArea, out, outText);
+        replaceOutcomeLine(successArea, calc.outcome, calc.outcomeText);
         replaced += 1;
       }
 
-      if (replaced > 0) {
-        debug("Evil Botches replaced vanilla result line(s)", {
-          messageId: message?.id ?? null,
-          rollTraceId: rollCtx?.rollTraceId ?? null,
-          difficulty,
-          rollAreas: rollAreas.length,
-          replaced,
-        });
-      }
+      logReplaced(debug, message, rollCtx, {
+        difficulty,
+        rollAreasCount: rollAreas.length,
+        replaced,
+      });
     } catch (err) {
       error("Evil Botches renderChatMessage failed", err);
     }
