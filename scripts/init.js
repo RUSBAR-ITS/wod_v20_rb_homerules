@@ -27,7 +27,7 @@ import { registerRollContextChatAttachmentHook } from "./roll-context/attach-rol
 import { injectBloodpoolExtras } from "./vampire/bloodpool/inject-bloodpool-extras.js";
 import { enforceBloodpoolMaxPerRow } from "./vampire/bloodpool/enforce-bloodpool-max-per-row.js";
 
-import { registerPreserveItemImagesHooks } from "./items/preserve-item-images.js";
+import { registerPreserveItemImagesHooks } from "./items/preserve-item-image-paths.js";
 
 const { debug, info, warn, error } = debugNs("init");
 
