@@ -1,22 +1,40 @@
 import { MODULE_ID } from "../constants/module-id.js";
-import { SETTINGS_KEYS } from "../constants/settings.js";
 import { debugNs } from "../logger/ns.js";
+
+import { isEvilBotchesEnabled } from "./settings/is-evil-botches-enabled.js";
+import { isSystemSubtractOnesEnabled } from "./settings/is-system-subtract-ones-enabled.js";
+
+import { getActorFromRollContext } from "./actor/get-actor-from-roll-context.js";
+import { shouldApplyEvilBotchesToRoll } from "./gating/should-apply-evil-botches-to-roll.js";
+
+import { getMessageRolls } from "./rolls/get-message-rolls.js";
+import { extractD10ValuesFromRolls } from "./rolls/extract-d10-values-from-rolls.js";
+import { getTenSuccessValue } from "./rolls/get-ten-success-value.js";
+
+import { computeOutcome } from "./outcome/compute-outcome.js";
+import { formatOutcomeText } from "./outcome/format-outcome-text.js";
+
+import { safeJsonStringify } from "./debug/safe-json-stringify.js";
+
+import { getRollAreas } from "./dom/get-roll-areas.js";
+import { getSuccessArea } from "./dom/get-success-area.js";
+import { getDirectSuccessDivs } from "./dom/get-direct-success-divs.js";
+import { replaceOutcomeLine } from "./dom/replace-outcome-line.js";
 
 const { debug, warn, error } = debugNs("evil-botches:chat");
 
 /**
  * Evil Botches (chat-only):
- * - Applies ONLY when the system subtracts ones from successes (CONFIG.worldofdarkness.handleOnes === true).
- * - Applies ONLY when our module setting is enabled (EVIL_BOTCHES).
  *
- * We override the vanilla result line (success/fail/botch) with our own logic:
- * - If successes === 0 and ones === 0 => "Failure"
- * - If successes === ones => "Failure"
- * - If successes > ones => "Success: X" where X = successes - ones
- * - If ones > successes => "Botch: X" where X = ones - successes
+ * This feature is intentionally display-only:
+ * - We do NOT modify any system roll logic.
+ * - We only replace the rendered result line inside the chat card.
  *
- * NOTE:
- * We intentionally do not change system roll logic, only chat display.
+ * Key constraints:
+ * - Applies ONLY when the system subtracts ones from successes.
+ * - Applies ONLY when our module setting is enabled.
+ * - Must mirror the system's own gating (origin toggles, actor checks, favorited traits, etc)
+ *   so that the chat display remains consistent with what the system actually does.
  */
 export function registerEvilBotchesChatHook() {
   Hooks.on("renderChatMessage", (message, html) => {
@@ -87,7 +105,6 @@ export function registerEvilBotchesChatHook() {
       });
 
       const difficulty = Number(rollCtx?.difficulty);
-
       if (!Number.isFinite(difficulty)) {
         debug("Evil Botches: rollContext.difficulty missing/invalid; skipping", {
           messageId: message?.id ?? null,
@@ -98,14 +115,13 @@ export function registerEvilBotchesChatHook() {
         return;
       }
 
-      const rollAreas = Array.from(root.querySelectorAll(".tray-roll-area"));
+      const rollAreas = getRollAreas(root);
       if (rollAreas.length === 0) {
         debug("Evil Botches: no roll areas found in chat card", { messageId: message?.id });
         return;
       }
 
       const origin = rollCtx?.origin ?? null;
-
       const isSpecialized = rollCtx.isSpecialized === true;
       const isWillpowerUsed = rollCtx.useWillpower === true;
 
@@ -136,7 +152,6 @@ export function registerEvilBotchesChatHook() {
       // This is more reliable than parsing HTML or image attributes, and is locale-independent.
       const msgRolls = getMessageRolls(message);
 
-      // Variant A:
       // The WoD system commonly stores a big dice pool as multiple Roll objects (often each Roll is 1d10).
       // We treat ALL message rolls as a single pool and compute the outcome once.
       const allDieValues = extractD10ValuesFromRolls(msgRolls);
@@ -186,13 +201,14 @@ export function registerEvilBotchesChatHook() {
 
       const successesBeforeOnes = diceSuccesses + (Number.isFinite(autoSuccesses) ? autoSuccesses : 0);
       const out = computeOutcome(successesBeforeOnes, ones, isWillpowerUsed);
+      const outText = formatOutcomeText(out);
 
       let replaced = 0;
 
       for (let idx = 0; idx < rollAreas.length; idx += 1) {
         const area = rollAreas[idx];
 
-        const successArea = area.querySelector(".tray-success-area");
+        const successArea = getSuccessArea(area);
         if (!successArea) {
           debug("Evil Botches: roll area has no .tray-success-area, skipping", { messageId: message?.id });
           continue;
@@ -200,7 +216,7 @@ export function registerEvilBotchesChatHook() {
 
         // System template renders result lines as direct <div> children inside `.tray-success-area`.
         // We replace the whole content with a single line (per requirements).
-        const directDivs = successArea.querySelectorAll(":scope > div");
+        const directDivs = getDirectSuccessDivs(successArea);
         if (directDivs.length === 0) {
           debug("Evil Botches: no direct divs found in success area", { messageId: message?.id });
           continue;
@@ -239,29 +255,7 @@ export function registerEvilBotchesChatHook() {
           origin,
         });
 
-        // Replace vanilla lines completely.
-        // Keep "danger" styling for botch, and "success" styling for success (via existing classes).
-        successArea.textContent = "";
-
-        const line = document.createElement("div");
-
-        if (out.kind === "botch") {
-          const span = document.createElement("span");
-          span.classList.add("danger");
-          span.textContent = game.i18n.format("rusbar.homerules.evilBotches.chat.botch", { value: out.value });
-          line.appendChild(span);
-        } else if (out.kind === "success") {
-          const span = document.createElement("span");
-          span.classList.add("success");
-          span.textContent = game.i18n.format("rusbar.homerules.evilBotches.chat.success", { value: out.value });
-          line.appendChild(span);
-        } else {
-          const span = document.createElement("span");
-          span.textContent = game.i18n.localize("rusbar.homerules.evilBotches.chat.failure");
-          line.appendChild(span);
-        }
-
-        successArea.appendChild(line);
+        replaceOutcomeLine(successArea, out, outText);
         replaced += 1;
       }
 
@@ -278,330 +272,4 @@ export function registerEvilBotchesChatHook() {
       error("Evil Botches renderChatMessage failed", err);
     }
   });
-}
-
-function isEvilBotchesEnabled() {
-  return game?.settings?.get(MODULE_ID, SETTINGS_KEYS.EVIL_BOTCHES) === true;
-}
-
-function isSystemSubtractOnesEnabled() {
-  return CONFIG?.worldofdarkness?.handleOnes === true;
-}
-
-/**
- * Retrieve the Actor referenced by our structured roll context.
- *
- * We intentionally do not try to infer actor from the ChatMessage speaker,
- * because in some edge cases (GM whisper, synthetic speaker, macro rolls)
- * it may not match the actual roll source.
- */
-function getActorFromRollContext(rollCtx) {
-  try {
-    const actorId = rollCtx?.actorId ?? null;
-    if (!actorId) return null;
-    return game?.actors?.get(actorId) ?? null;
-  } catch (_err) {
-    return null;
-  }
-}
-
-/**
- * Decide if we should apply Evil Botches to this message.
- *
- * Evil Botches must only run when the SYSTEM would actually subtract ones.
- * Otherwise, chat output becomes inconsistent with the real roll result.
- */
-function shouldApplyEvilBotchesToRoll({ rollCtx, actor }) {
-  const origin = rollCtx?.origin ?? null;
-
-  // Global system toggle.
-  if (CONFIG?.worldofdarkness?.handleOnes !== true) {
-    return {
-      ok: false,
-      reason: "system-handleOnes-disabled",
-      details: { origin },
-    };
-  }
-
-  // Origin-specific system toggles.
-  if (origin === "soak" && CONFIG?.worldofdarkness?.useOnesSoak !== true) {
-    return {
-      ok: false,
-      reason: "system-useOnesSoak-disabled",
-      details: { origin },
-    };
-  }
-
-  if (origin === "damage" && CONFIG?.worldofdarkness?.useOnesDamage !== true) {
-    return {
-      ok: false,
-      reason: "system-useOnesDamage-disabled",
-      details: { origin },
-    };
-  }
-
-  // System roll logic checks actor presence before applying ones logic.
-  // If we don't have an actor, we cannot reliably mirror system behavior.
-  if (!actor) {
-    return {
-      ok: false,
-      reason: "no-actor",
-      details: {
-        origin,
-        actorId: rollCtx?.actorId ?? null,
-        attribute: rollCtx?.attribute ?? null,
-        ability: rollCtx?.ability ?? null,
-      },
-    };
-  }
-
-  // System does NOT subtract ones for favorited traits.
-  // We mirror that to keep chat display consistent.
-  const fav = getFavoritedSnapshot(actor, rollCtx);
-  if (fav.isFavorited === true) {
-    return {
-      ok: false,
-      reason: "favorited-trait",
-      details: {
-        origin,
-        actorId: actor.id,
-        attribute: fav.attribute,
-        ability: fav.ability,
-        hits: fav.hits,
-      },
-    };
-  }
-
-  return {
-    ok: true,
-    reason: "ok",
-    details: {
-      origin,
-      actorId: actor.id,
-    },
-  };
-}
-
-/**
- * Mirror the system's "favorited" checks used to bypass subtract-ones logic.
- *
- * The system checks both attributes and abilities namespaces for both keys
- * (attribute and ability), because those keys can swap depending on the roll.
- */
-function getFavoritedSnapshot(actor, rollCtx) {
-  const attribute = rollCtx?.attribute ?? null;
-  const ability = rollCtx?.ability ?? null;
-
-  const hits = [];
-
-  try {
-    const sys = actor?.system ?? null;
-    const attrs = sys?.attributes ?? null;
-    const abils = sys?.abilities ?? null;
-
-    // attributes[attribute]
-    if (attribute && attrs?.[attribute]?.isfavorited === true) hits.push({ path: `attributes.${attribute}.isfavorited` });
-    // attributes[ability]
-    if (ability && attrs?.[ability]?.isfavorited === true) hits.push({ path: `attributes.${ability}.isfavorited` });
-    // abilities[attribute]
-    if (attribute && abils?.[attribute]?.isfavorited === true) hits.push({ path: `abilities.${attribute}.isfavorited` });
-    // abilities[ability]
-    if (ability && abils?.[ability]?.isfavorited === true) hits.push({ path: `abilities.${ability}.isfavorited` });
-  } catch (_err) {
-    // ignore
-  }
-
-  return {
-    attribute,
-    ability,
-    isFavorited: hits.length > 0,
-    hits,
-  };
-}
-
-function getTenSuccessValue(isSpecialized) {
-  const cfg = CONFIG?.worldofdarkness;
-  if (!cfg) return 1;
-
-  // System rules:
-  // - If specialization rule enabled and this roll is specialized -> specialityAddSuccess (usually 2)
-  // - Else if ten rule enabled -> tenAddSuccess
-  // - Else -> 1
-  if (cfg.usespecialityAddSuccess === true && isSpecialized === true) {
-    const v = Number(cfg.specialityAddSuccess);
-    return Number.isFinite(v) && v > 0 ? v : 2;
-  }
-
-  if (cfg.usetenAddSuccess === true) {
-    const v = Number(cfg.tenAddSuccess);
-    return Number.isFinite(v) && v > 0 ? v : 1;
-  }
-
-  return 1;
-}
-
-/**
- * Get Roll objects from a ChatMessage in a version-tolerant way.
- * - Foundry usually provides message.rolls (array).
- * - Some cases may still provide message.roll (single).
- */
-function getMessageRolls(message) {
-  try {
-    if (Array.isArray(message?.rolls) && message.rolls.length > 0) return message.rolls;
-    if (message?.roll) return [message.roll];
-  } catch (_err) {
-    // ignore
-  }
-  return [];
-}
-
-/**
- * Safely stringify data for file logs.
- *
- * Foundry log files often collapse nested objects to "Object".
- * By converting important payloads to strings explicitly, we ensure
- * the diagnostics remain readable and actionable.
- */
-function safeJsonStringify(value) {
-  try {
-    return JSON.stringify(value);
-  } catch (_err) {
-    return "<unserializable>";
-  }
-}
-
-/**
- * Pick a Roll for a specific visual roll area.
- * If there are multiple rolls, we map by index, falling back to the first.
- */
-function pickRollForArea(rolls, areaIndex) {
-  if (!Array.isArray(rolls) || rolls.length === 0) return null;
-  return rolls[areaIndex] ?? rolls[0] ?? null;
-}
-
-/**
- * Extract d10 results from a Roll object.
- *
- * We intentionally do not rely on rendered HTML or image attributes.
- * We prefer roll.dice (if present), otherwise we fall back to scanning roll.terms.
- *
- * Returns a list of integer results in [1..10].
- */
-function extractD10ValuesFromRoll(roll) {
-  const values = [];
-
-  try {
-    // Preferred: roll.dice (array of DiceTerm)
-    const diceTerms = Array.isArray(roll?.dice) ? roll.dice : null;
-
-    if (diceTerms && diceTerms.length > 0) {
-      for (const term of diceTerms) {
-        const faces = Number(term?.faces);
-        if (faces !== 10) continue;
-
-        const results = Array.isArray(term?.results) ? term.results : [];
-        for (const r of results) {
-          const v = Number(r?.result);
-          if (Number.isFinite(v) && v >= 1 && v <= 10) values.push(v);
-        }
-      }
-      return values;
-    }
-
-    // Fallback: scan roll.terms recursively for DiceTerms with faces === 10
-    const stack = Array.isArray(roll?.terms) ? [...roll.terms] : [];
-
-    while (stack.length > 0) {
-      const t = stack.shift();
-
-      // Nested term containers (pools/groups) may expose .terms or .dice
-      if (t && Array.isArray(t.terms)) stack.push(...t.terms);
-      if (t && Array.isArray(t.dice)) stack.push(...t.dice);
-
-      const faces = Number(t?.faces);
-      if (faces !== 10) continue;
-
-      const results = Array.isArray(t?.results) ? t.results : [];
-      for (const r of results) {
-        const v = Number(r?.result);
-        if (Number.isFinite(v) && v >= 1 && v <= 10) values.push(v);
-      }
-    }
-  } catch (_err) {
-    // ignore
-  }
-
-  return values;
-}
-
-/**
- * Extract d10 results from ALL Roll objects of a ChatMessage.
- *
- * In the WoD system, a dice pool may be represented as multiple Roll objects
- * (often each Roll is a single 1d10). We aggregate them into one pool.
- */
-function extractD10ValuesFromRolls(rolls) {
-  const out = [];
-
-  if (!Array.isArray(rolls) || rolls.length === 0) return out;
-
-  for (const r of rolls) {
-    const vals = extractD10ValuesFromRoll(r);
-    if (vals.length > 0) out.push(...vals);
-  }
-
-  return out;
-}
-
-function computeOutcome(successesBeforeOnes, ones, isWillpowerUsed) {
-  const s = Number.isFinite(successesBeforeOnes) ? successesBeforeOnes : 0;
-  const o = Number.isFinite(ones) ? ones : 0;
-
-  const netBeforeWillpower = s - o;
-  let netAfterWillpower = netBeforeWillpower;
-  let willpowerRuleApplied = "none";
-
-  // Home rule (module-specific):
-  // - If Willpower is used and net >= 1 => net += 1
-  // - If Willpower is used and net <= 0 => net = 1
-  // This rule is applied AFTER subtracting ones.
-  if (isWillpowerUsed === true) {
-    if (netAfterWillpower >= 1) {
-      netAfterWillpower += 1;
-      willpowerRuleApplied = "plus-1";
-    } else {
-      netAfterWillpower = 1;
-      willpowerRuleApplied = "set-to-1";
-    }
-  }
-
-  // Determine outcome based on the final net value.
-  // If Willpower is used, it guarantees a success with this home rule.
-  if (netAfterWillpower > 0) {
-    return {
-      kind: "success",
-      value: netAfterWillpower,
-      netBeforeWillpower,
-      netAfterWillpower,
-      willpowerRuleApplied,
-    };
-  }
-
-  if (o > s) {
-    return {
-      kind: "botch",
-      value: o - s,
-      netBeforeWillpower,
-      netAfterWillpower,
-      willpowerRuleApplied,
-    };
-  }
-
-  return {
-    kind: "failure",
-    value: 0,
-      netBeforeWillpower,
-      netAfterWillpower,
-      willpowerRuleApplied,
-  };
 }
